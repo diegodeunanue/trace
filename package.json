@@ -1,0 +1,32 @@
+{
+  "name": "trace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "deck.gl": "^9.1.0",
+    "@deck.gl/react": "^9.1.0",
+    "@deck.gl/layers": "^9.1.0",
+    "maplibre-gl": "^4.7.1",
+    "@vis.gl/react-maplibre": "^8.1.0",
+    "@turf/turf": "^7.1.0",
+    "rbush": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.2",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.5",
+    "tailwindcss": "^3.4.14",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47"
+  }
+}

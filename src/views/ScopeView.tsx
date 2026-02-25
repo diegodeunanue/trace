@@ -4,6 +4,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import type { TracePoint } from '@/lib/parseTimeline'
 import { filterPoints } from '@/lib/parseTimeline'
 import type { ScopeSelection } from '@/App'
+import { detectCities, type CityMeta } from '@/lib/cities'
 
 interface Props {
   allPoints: TracePoint[]
@@ -18,9 +19,12 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
   const [startDate, setStartDate] = useState<string>('')
   const [endDate, setEndDate] = useState<string>('')
   const [pointCount, setPointCount] = useState(0)
+  const [mode, setMode] = useState<'pan' | 'draw'>('pan')
   const [isDrawing, setIsDrawing] = useState(false)
   const drawStart = useRef<[number, number] | null>(null)
   const bboxLayerAdded = useRef(false)
+  const [detectedCities, setDetectedCities] = useState<CityMeta[]>([])
+  const [selectedCity, setSelectedCity] = useState<CityMeta | null>(null)
 
   // Date range from all points
   const { minDate, maxDate } = useMemo(() => {
@@ -30,6 +34,20 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
       maxDate: new Date(Math.max(...ts)).toISOString().split('T')[0],
     }
   }, [allPoints])
+
+  // Detect cities from effective bbox
+  useEffect(() => {
+    const lats = allPoints.map(p => p.lat)
+    const lngs = allPoints.map(p => p.lng)
+    const effectiveBbox: [number, number, number, number] = bbox ?? [
+      Math.min(...lngs), Math.min(...lats),
+      Math.max(...lngs), Math.max(...lats),
+    ]
+    const found = detectCities(effectiveBbox)
+    setDetectedCities(found)
+    // Clear selection if selected city is no longer detected
+    setSelectedCity(prev => found.find(c => c.id === prev?.id) ?? null)
+  }, [allPoints, bbox])
 
   // Compute filtered count
   useEffect(() => {
@@ -70,7 +88,7 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
             attribution: '© OpenStreetMap contributors',
           },
         },
-        layers: [{ id: 'osm', type: 'raster', source: 'osm-tiles', paint: { 'raster-opacity': 0.15 } }],
+        layers: [{ id: 'osm', type: 'raster', source: 'osm-tiles', paint: { 'raster-opacity': 0.25 } }],
       },
       center: [centerLng, centerLat],
       zoom: 10,
@@ -136,8 +154,17 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
     }
   }, [bbox])
 
+  // Re-enable dragPan and cancel any in-progress draw when switching to pan mode
+  useEffect(() => {
+    if (mode === 'pan') {
+      mapRef.current?.dragPan.enable()
+      setIsDrawing(false)
+      drawStart.current = null
+    }
+  }, [mode])
+
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    if (!mapRef.current) return
+    if (!mapRef.current || mode !== 'draw') return
     e.preventDefault()
     const map = mapRef.current
     map.dragPan.disable()
@@ -147,7 +174,7 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
     const lngLat = map.unproject([x, y])
     drawStart.current = [lngLat.lng, lngLat.lat]
     setIsDrawing(true)
-  }, [])
+  }, [mode])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!isDrawing || !drawStart.current || !mapRef.current) return
@@ -166,10 +193,11 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
   }, [isDrawing])
 
   const handleMouseUp = useCallback(() => {
+    if (!isDrawing) return
     mapRef.current?.dragPan.enable()
     setIsDrawing(false)
     drawStart.current = null
-  }, [])
+  }, [isDrawing])
 
   function handleConfirm() {
     const effectiveBbox = bbox ?? (() => {
@@ -184,7 +212,12 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
       endDate ? new Date(endDate) : null,
     )
     onConfirm(
-      { bbox: effectiveBbox, startDate: startDate ? new Date(startDate) : null, endDate: endDate ? new Date(endDate) : null },
+      {
+        bbox: effectiveBbox,
+        startDate: startDate ? new Date(startDate) : null,
+        endDate: endDate ? new Date(endDate) : null,
+        city: selectedCity,
+      },
       filtered,
     )
   }
@@ -210,7 +243,7 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
           <div>
             <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Draw area</p>
             <p className="text-xs text-text-muted leading-relaxed">
-              Hold and drag on the map to select an area. Leave blank to use all your data.
+              Switch to <span className="text-text-primary">Draw</span> mode on the map, then drag to select an area. Leave blank to use all your data.
             </p>
             {bbox && (
               <button
@@ -221,6 +254,39 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
               </button>
             )}
           </div>
+
+          {/* City detection */}
+          {detectedCities.length > 0 && (
+            <div>
+              <p className="text-xs text-text-muted uppercase tracking-wider mb-1">Cities found</p>
+              <p className="text-xs text-text-muted mb-3 leading-relaxed">Select one to use as map background in the next step.</p>
+              <div className="flex flex-col gap-1">
+                {detectedCities.map(city => (
+                  <button
+                    key={city.id}
+                    onClick={() => setSelectedCity(prev => prev?.id === city.id ? null : city)}
+                    className={`flex items-center gap-2.5 py-1.5 px-2 rounded-lg text-left w-full transition-colors ${
+                      selectedCity?.id === city.id
+                        ? 'bg-accent-purple/15 border border-accent-purple/40'
+                        : 'hover:bg-surface border border-transparent'
+                    }`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                      selectedCity?.id === city.id ? 'border-accent-purple' : 'border-border'
+                    }`}>
+                      {selectedCity?.id === city.id && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-accent-purple" />
+                      )}
+                    </span>
+                    <span>
+                      <span className="text-xs font-medium text-text-primary block leading-tight">{city.name}</span>
+                      <span className="text-xs text-text-muted leading-tight">{city.country}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div>
             <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Date range</p>
@@ -261,13 +327,29 @@ export default function ScopeView({ allPoints, onConfirm, onBack }: Props) {
         {/* Map */}
         <div
           ref={mapContainer}
-          className="flex-1"
-          style={{ cursor: isDrawing ? 'crosshair' : 'crosshair' }}
+          className="flex-1 relative"
+          style={{ cursor: mode === 'draw' ? 'crosshair' : 'grab' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
-        />
+        >
+          {/* Pan / Draw mode toggle */}
+          <div className="absolute top-3 right-3 z-10 flex rounded-lg overflow-hidden border border-border shadow-lg text-xs font-medium">
+            <button
+              onClick={() => setMode('pan')}
+              className={`px-3 py-1.5 transition-colors ${mode === 'pan' ? 'bg-accent-purple text-white' : 'bg-surface text-text-muted hover:text-text-primary'}`}
+            >
+              Pan
+            </button>
+            <button
+              onClick={() => setMode('draw')}
+              className={`px-3 py-1.5 transition-colors ${mode === 'draw' ? 'bg-accent-purple text-white' : 'bg-surface text-text-muted hover:text-text-primary'}`}
+            >
+              Draw
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

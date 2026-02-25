@@ -4,19 +4,20 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import { DeckGL } from '@deck.gl/react'
 import { PathLayer } from '@deck.gl/layers'
 import type { TracePoint } from '@/lib/parseTimeline'
-import { fetchOSMNetwork, type OSMGraph } from '@/lib/fetchOSMNetwork'
+import { fetchOSMNetwork, buildGraphFromCoords, type OSMEdge, type OSMGraph } from '@/lib/fetchOSMNetwork'
 import { mapPointsToEdges } from '@/lib/mapPointsToEdges'
-import { runPipeline, DEFAULT_PARAMS, type VisualizationParams } from '@/lib/algorithms'
+import { runPipeline, computeBgIntensity, DEFAULT_PARAMS, type VisualizationParams } from '@/lib/algorithms'
 import { getEdgeColor, getEdgeWidth, PRESETS, DEFAULT_PRESET, type ColorPreset } from '@/lib/colorUtils'
-import type { ScopeSelection } from '@/App'
+import type { CityMeta } from '@/lib/cities'
 
 interface Props {
   points: TracePoint[]
-  scopeSelection?: ScopeSelection
+  city?: CityMeta | null
   onBack: () => void
 }
 
 type LoadState = 'idle' | 'fetching' | 'processing' | 'ready' | 'error'
+type BgMode = 'spread' | 'city' | 'off'
 
 interface VisParams extends VisualizationParams {
   baseWidth: number
@@ -29,7 +30,7 @@ const DEFAULT_VIS_PARAMS: VisParams = {
   widthCap: 3,
 }
 
-export default function StyleView({ points, onBack }: Props) {
+export default function StyleView({ points, city = null, onBack }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const graphRef = useRef<OSMGraph | null>(null)
@@ -39,7 +40,16 @@ export default function StyleView({ points, onBack }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [preset, setPreset] = useState<ColorPreset>(DEFAULT_PRESET)
   const [params, setParams] = useState<VisParams>(DEFAULT_VIS_PARAMS)
-  const [processedEdges, setProcessedEdges] = useState<OSMGraph['edges']>([])
+  const [processedEdges, setProcessedEdges] = useState<OSMEdge[]>([])
+  // Raw city coords stored separately so the city background always shows the
+  // full downloaded city grid, independent of the trace pipeline.
+  const [cityEdges, setCityEdges] = useState<[number, number][][]>([])
+
+  const [mapReady, setMapReady] = useState(false)
+
+  const [bgMode, setBgMode] = useState<BgMode>(city ? 'city' : 'spread')
+  const [bgOpacity, setBgOpacity] = useState(20) // 0–100
+  const [bgSpread, setBgSpread] = useState(10)   // 0–50 hops
 
   // Compute bbox from points
   const bbox = (() => {
@@ -48,10 +58,22 @@ export default function StyleView({ points, onBack }: Props) {
     return [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)] as [number, number, number, number]
   })()
 
+  // Small fixed buffer so GPS points right at the edge still snap to edges
+  const bgPad = 0.01
+
   const centerLng = (bbox[0] + bbox[2]) / 2
   const centerLat = (bbox[1] + bbox[3]) / 2
 
-  // Init map
+  // deck.gl view state — synced to MapLibre via move listener
+  const [viewState, setViewState] = useState({
+    longitude: centerLng,
+    latitude: centerLat,
+    zoom: 12,
+    pitch: 0,
+    bearing: 0,
+  })
+
+  // Init map — includes CartoDB tile source/layer (hidden by default)
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return
     const map = new maplibregl.Map({
@@ -59,41 +81,73 @@ export default function StyleView({ points, onBack }: Props) {
       style: {
         version: 8,
         sources: {},
-        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': preset.background } }],
+        layers: [
+          { id: 'bg', type: 'background', paint: { 'background-color': preset.background } },
+        ],
       },
       center: [centerLng, centerLat],
       zoom: 12,
       interactive: true,
     })
     mapRef.current = map
+
+    map.on('load', () => {
+      setMapReady(true)
+    })
+
+    map.on('move', () => {
+      const c = map.getCenter()
+      setViewState({
+        longitude: c.lng,
+        latitude: c.lat,
+        zoom: map.getZoom(),
+        pitch: map.getPitch(),
+        bearing: map.getBearing(),
+      })
+    })
+
     return () => { map.remove(); mapRef.current = null }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Update map background when preset changes
+  // Update MapLibre background color when preset changes
   useEffect(() => {
-    const map = mapRef.current
-    if (!map || !map.loaded()) return
-    map.setPaintProperty('bg', 'background-color', preset.background)
-  }, [preset])
+    if (!mapReady) return
+    mapRef.current?.setPaintProperty('bg', 'background-color', preset.background)
+  }, [preset, mapReady])
 
-  // Fetch OSM + map points (once on mount)
+  // Load street network + run pipeline (once on mount)
+  // When a city is selected: load pre-downloaded city JSON → skip Overpass entirely
+  // When no city: fetch from Overpass with fallback endpoints
   useEffect(() => {
     let cancelled = false
     async function load() {
       setLoadState('fetching')
       setError(null)
       try {
-        const graph = await fetchOSMNetwork(bbox, msg => {
-          if (!cancelled) setLoadMsg(msg)
-        })
+        let graph: OSMGraph
+
+        if (city) {
+          setLoadMsg(`Loading ${city.name} street network…`)
+          const res = await fetch(`/cities/${city.id}.json`)
+          if (!res.ok) throw new Error(`City data not found. Run: python scripts/download-cities.py ${city.id}`)
+          const data = await res.json() as { coords: [number, number][][] }
+          if (cancelled) return
+          setCityEdges(data.coords)
+          setLoadMsg('Building city graph…')
+          await new Promise(r => setTimeout(r, 30))
+          graph = buildGraphFromCoords(data.coords)
+        } else {
+          graph = await fetchOSMNetwork(bbox, msg => {
+            if (!cancelled) setLoadMsg(msg)
+          }, bgPad)
+        }
+
         if (cancelled) return
         graphRef.current = graph
 
         setLoadState('processing')
         setLoadMsg('Mapping your traces to streets...')
-
-        // Run in next tick to allow UI update
         await new Promise(r => setTimeout(r, 50))
         mapPointsToEdges(points, graph, pct => {
           if (!cancelled) setLoadMsg(`Mapping points... ${Math.round(pct * 100)}%`)
@@ -103,6 +157,7 @@ export default function StyleView({ points, onBack }: Props) {
         setLoadMsg('Running visualization pipeline...')
         await new Promise(r => setTimeout(r, 50))
         runPipeline(graph, params)
+        computeBgIntensity(graph, bgSpread)
 
         if (cancelled) return
         setProcessedEdges([...graph.edges])
@@ -119,35 +174,90 @@ export default function StyleView({ points, onBack }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Re-run pipeline when params change (after initial load)
-  const rerunPipeline = useCallback(() => {
+  // Re-run pipeline + bg intensity when params or bgSpread change
+  const rerunAll = useCallback(() => {
     const graph = graphRef.current
     if (!graph || loadState !== 'ready') return
     runPipeline(graph, params)
+    computeBgIntensity(graph, bgSpread)
     setProcessedEdges([...graph.edges])
-  }, [params, loadState])
+  }, [params, bgSpread, loadState])
 
   useEffect(() => {
     if (loadState !== 'ready') return
-    rerunPipeline()
-  }, [params, rerunPipeline, loadState])
+    rerunAll()
+  }, [params, bgSpread, rerunAll, loadState])
 
-  // deck.gl view state synced to MapLibre
-  const [viewState, setViewState] = useState({
-    longitude: centerLng,
-    latitude: centerLat,
-    zoom: 12,
-    pitch: 0,
-    bearing: 0,
-  })
+  // Fit the camera to the data being drawn — called by the Center button.
+  const fitToData = useCallback(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (bgMode === 'city' && cityEdges.length > 0) {
+      let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity
+      for (const seg of cityEdges) {
+        for (const [lng, lat] of seg) {
+          if (lng < minLng) minLng = lng
+          if (lng > maxLng) maxLng = lng
+          if (lat < minLat) minLat = lat
+          if (lat > maxLat) maxLat = lat
+        }
+      }
+      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 40, duration: 600 })
+    } else {
+      map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 600 })
+    }
+  }, [bgMode, cityEdges, bbox])
+
+  const bgAlpha = Math.round(bgOpacity * 2.55) // bgOpacity 0–100 → alpha 0–255
+
+  // City grid: show every downloaded city edge at uniform opacity.
+  // Uses raw cityEdges (direct from city JSON) so the full city is always
+  // rendered regardless of what the trace pipeline produces.
+  const cityLayer = bgMode === 'city' && cityEdges.length > 0
+    ? [new PathLayer({
+        id: 'city-grid',
+        data: cityEdges,
+        getPath: (seg: [number, number][]) => seg,
+        getColor: [
+          preset.baseStreetColor[0],
+          preset.baseStreetColor[1],
+          preset.baseStreetColor[2],
+          bgAlpha,
+        ] as [number, number, number, number],
+        getWidth: preset.baseStreetWidth,
+        widthUnits: 'pixels',
+        widthMinPixels: 0.3,
+        pickable: false,
+        updateTriggers: { getColor: [preset.id, bgAlpha] },
+      })]
+    : []
 
   const layers = [
+    ...cityLayer,
+    ...(bgMode === 'spread' && processedEdges.length > 0 ? [
+      new PathLayer({
+        id: 'bg-streets',
+        data: processedEdges,
+        getPath: (e: OSMEdge) => e.coords,
+        getColor: (e: OSMEdge) => [
+          preset.baseStreetColor[0],
+          preset.baseStreetColor[1],
+          preset.baseStreetColor[2],
+          Math.round(e.bgIntensity * bgAlpha),
+        ] as [number, number, number, number],
+        getWidth: preset.baseStreetWidth,
+        widthUnits: 'pixels',
+        widthMinPixels: 0.3,
+        pickable: false,
+        updateTriggers: { getColor: [preset.id, bgAlpha] },
+      }),
+    ] : []),
     new PathLayer({
       id: 'trace',
       data: processedEdges.filter(e => Math.abs(e.normalizedVisits) > 0),
-      getPath: (e: OSMGraph['edges'][0]) => e.coords,
-      getColor: (e: OSMGraph['edges'][0]) => getEdgeColor(e.normalizedVisits, preset),
-      getWidth: (e: OSMGraph['edges'][0]) => getEdgeWidth(e.normalizedVisits, params),
+      getPath: (e: OSMEdge) => e.coords,
+      getColor: (e: OSMEdge) => getEdgeColor(e.normalizedVisits, preset),
+      getWidth: (e: OSMEdge) => getEdgeWidth(e.normalizedVisits, params),
       widthUnits: 'pixels',
       widthMinPixels: 0.5,
       pickable: false,
@@ -160,6 +270,17 @@ export default function StyleView({ points, onBack }: Props) {
 
   const setParam = (key: keyof VisParams, value: number) =>
     setParams(p => ({ ...p, [key]: value }))
+
+  const BG_OPTIONS: { value: BgMode; label: string; sub: string; disabled?: boolean }[] = [
+    { value: 'spread', label: 'Street spread', sub: 'Fade from your trace outward' },
+    {
+      value: 'city',
+      label: city ? `${city.name} grid` : 'City grid',
+      sub: city ? 'Full city street skeleton' : 'No city selected — go back to Scope',
+      disabled: !city,
+    },
+    { value: 'off', label: 'Off', sub: 'Solid background only' },
+  ]
 
   return (
     <div className="h-full w-full flex flex-col bg-bg">
@@ -201,14 +322,54 @@ export default function StyleView({ points, onBack }: Props) {
             </div>
           </div>
 
-          {/* Params */}
+          {/* Background mode */}
+          <div>
+            <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Background</p>
+            <div className="flex flex-col gap-1 mb-3">
+              {BG_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  disabled={opt.disabled}
+                  onClick={() => setBgMode(opt.value)}
+                  className={`flex items-start gap-2.5 py-1.5 px-1 rounded-lg text-left w-full transition-colors ${
+                    opt.disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-surface'
+                  }`}
+                >
+                  <span className={`mt-0.5 w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
+                    bgMode === opt.value ? 'border-accent-purple' : 'border-border'
+                  }`}>
+                    {bgMode === opt.value && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-accent-purple" />
+                    )}
+                  </span>
+                  <span className="flex flex-col">
+                    <span className={`text-xs font-medium leading-tight ${bgMode === opt.value ? 'text-text-primary' : 'text-text-muted'}`}>
+                      {opt.label}
+                    </span>
+                    <span className="text-xs text-text-muted leading-tight mt-0.5">{opt.sub}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {bgMode !== 'off' && (
+              <div className="flex flex-col gap-3">
+                <Slider label="Opacity" value={bgOpacity} min={0} max={100} step={2} onChange={setBgOpacity} />
+                {bgMode === 'spread' && (
+                  <Slider label="Spread" value={bgSpread} min={0} max={50} step={1} onChange={setBgSpread} />
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Trace params */}
           <div>
             <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Customize</p>
             <div className="flex flex-col gap-4">
-              <Slider label="Spread" value={params.spreadCoefficient} min={1} max={12} step={1} onChange={v => setParam('spreadCoefficient', v)} />
+              <Slider label="Spread" value={params.spreadCoefficient} min={1} max={30} step={1} onChange={v => setParam('spreadCoefficient', v)} />
               <Slider label="Smoothing" value={params.smoothingFactor} min={0.5} max={0.99} step={0.01} onChange={v => setParam('smoothingFactor', v)} />
-              <Slider label="Width" value={params.baseWidth} min={0.5} max={4} step={0.5} onChange={v => setParam('baseWidth', v)} />
-              <Slider label="Width cap" value={params.widthCap} min={1} max={8} step={0.5} onChange={v => setParam('widthCap', v)} />
+              <Slider label="Width" value={params.baseWidth} min={0.5} max={8} step={0.5} onChange={v => setParam('baseWidth', v)} />
+              <Slider label="Width cap" value={params.widthCap} min={1} max={14} step={0.5} onChange={v => setParam('widthCap', v)} />
               <Slider label="Fade threshold" value={params.transparencyThreshold} min={0} max={30} step={1} onChange={v => setParam('transparencyThreshold', v)} />
             </div>
           </div>
@@ -231,6 +392,26 @@ export default function StyleView({ points, onBack }: Props) {
         {/* Map + deck.gl overlay */}
         <div className="flex-1 relative">
           <div ref={mapContainer} className="absolute inset-0" />
+
+          {/* Map controls */}
+          <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
+            <button
+              onClick={() => mapRef.current?.zoomIn()}
+              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-lg leading-none transition-colors"
+              title="Zoom in"
+            >+</button>
+            <button
+              onClick={() => mapRef.current?.zoomOut()}
+              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-lg leading-none transition-colors"
+              title="Zoom out"
+            >−</button>
+            <button
+              onClick={fitToData}
+              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-xs leading-none transition-colors"
+              title="Center"
+            >⌖</button>
+          </div>
+
           <DeckGL
             style={{ position: 'absolute', top: '0', left: '0', right: '0', bottom: '0', pointerEvents: 'none' }}
             viewState={viewState}

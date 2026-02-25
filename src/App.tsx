@@ -3,6 +3,7 @@ import UploadView from '@/views/UploadView'
 import ScopeView from '@/views/ScopeView'
 import StyleView from '@/views/StyleView'
 import type { TracePoint } from '@/lib/parseTimeline'
+import type { CityMeta } from '@/lib/cities'
 
 export type AppStep = 'upload' | 'scope' | 'style'
 
@@ -10,20 +11,23 @@ export interface ScopeSelection {
   bbox: [number, number, number, number] // [minLng, minLat, maxLng, maxLat]
   startDate: Date | null
   endDate: Date | null
+  city: CityMeta | null
 }
 
 export default function App() {
   const [step, setStep] = useState<AppStep>('upload')
   const [allPoints, setAllPoints] = useState<TracePoint[]>([])
   const [scopedPoints, setScopedPoints] = useState<TracePoint[]>([])
+  const [selectedCity, setSelectedCity] = useState<CityMeta | null>(null)
 
   function handleUpload(points: TracePoint[]) {
     setAllPoints(points)
     setStep('scope')
   }
 
-  function handleScope(_selection: ScopeSelection, filtered: TracePoint[]) {
+  function handleScope(selection: ScopeSelection, filtered: TracePoint[]) {
     setScopedPoints(filtered)
+    setSelectedCity(selection.city)
     setStep('style')
   }
 
@@ -47,6 +51,7 @@ export default function App() {
       {step === 'style' && (
         <StyleView
           points={scopedPoints}
+          city={selectedCity}
           onBack={handleBack}
         />
       )}

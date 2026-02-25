@@ -89,4 +89,9 @@ export function mapPointsToEdges(
   }
 
   onProgress?.(1)
+
+  // Snapshot original GPS counts so the pipeline can reset before each run
+  for (const edge of graph.edges) {
+    edge.originalVisits = edge.visits
+  }
 }

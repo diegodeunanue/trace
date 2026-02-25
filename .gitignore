@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .DS_Store
 .env
+node_modules
+data_viz.html
+public/cities/
+dist/cities/

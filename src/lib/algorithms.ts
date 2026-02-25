@@ -49,7 +49,8 @@ function spread(graph: OSMGraph, coefficient: number): void {
 /** Stage 2: smooth gradients from high-visit edges to their neighbors */
 function smooth(graph: OSMGraph, factor: number): void {
   const visits = graph.edges.map(e => e.visits)
-  const maxV = Math.max(...visits)
+  let maxV = 0
+  for (const v of visits) if (v > maxV) maxV = v
   if (maxV === 0) return
 
   // Find top 10% edges (min 3 visits, or top 10% of max)
@@ -94,7 +95,8 @@ function normalize(graph: OSMGraph, transparencyThreshold: number): void {
 
   if (positiveVisits.length === 0) return
 
-  const maxV = Math.max(...positiveVisits)
+  let maxV = 0
+  for (const v of positiveVisits) if (v > maxV) maxV = v
   const uniqueSorted = [...new Set(positiveVisits)].sort((a, b) => a - b)
   const numUnique = uniqueSorted.length
 
@@ -124,8 +126,60 @@ function normalize(graph: OSMGraph, transparencyThreshold: number): void {
   }
 }
 
+/**
+ * Compute background fade intensity for every edge via BFS.
+ * Records the exact hop distance from any visited edge, then applies
+ * a linear mapping: hop 0 → 1.0 (100%), hop `iterations` → 0.1 (10%),
+ * beyond `iterations` → 0 (invisible).
+ */
+export function computeBgIntensity(graph: OSMGraph, iterations: number): void {
+  const n = graph.edges.length
+  const dist = new Array<number>(n).fill(Infinity)
+
+  // Seed: every edge touched by the pipeline starts at distance 0
+  let frontier: number[] = []
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(graph.edges[i].normalizedVisits) > 0) {
+      dist[i] = 0
+      frontier.push(i)
+    }
+  }
+
+  // BFS — record exact hop distance up to `iterations` hops
+  for (let d = 1; d <= iterations && frontier.length > 0; d++) {
+    const next: number[] = []
+    for (const i of frontier) {
+      const edge = graph.edges[i]
+      for (const nodeId of [edge.u, edge.v]) {
+        for (const ni of (graph.adjacency.get(nodeId) ?? [])) {
+          if (dist[ni] === Infinity) {
+            dist[ni] = d
+            next.push(ni)
+          }
+        }
+      }
+    }
+    frontier = next
+  }
+
+  // Linear: 1.0 at d=0, 0.1 at d=iterations, 0 beyond
+  for (let i = 0; i < n; i++) {
+    const d = dist[i]
+    if (d === Infinity) {
+      graph.edges[i].bgIntensity = 0
+    } else {
+      const t = iterations > 0 ? d / iterations : 0
+      graph.edges[i].bgIntensity = 1.0 - t * 0.9
+    }
+  }
+}
+
 /** Run the full normalization pipeline on a graph */
 export function runPipeline(graph: OSMGraph, params: VisualizationParams): void {
+  // Reset to original GPS counts so reducing any param works correctly
+  for (const edge of graph.edges) {
+    edge.visits = edge.originalVisits
+  }
   spread(graph, params.spreadCoefficient)
   smooth(graph, params.smoothingFactor)
   normalize(graph, params.transparencyThreshold)

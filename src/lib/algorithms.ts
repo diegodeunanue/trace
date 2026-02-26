@@ -14,12 +14,14 @@ export interface VisualizationParams {
   spreadCoefficient: number   // default 5  — diffusion iterations
   smoothingFactor: number     // default 0.95 — gradient gentleness (0–1)
   transparencyThreshold: number // default 10 — % of low values that fade
+  influenceThreshold: number  // default 3  — min visits for an edge to seed the smooth gradient
 }
 
 export const DEFAULT_PARAMS: VisualizationParams = {
   spreadCoefficient: 5,
   smoothingFactor: 0.95,
   transparencyThreshold: 10,
+  influenceThreshold: 3,
 }
 
 /** Stage 1: spread activity from visited edges to connected neighbors */
@@ -47,14 +49,13 @@ function spread(graph: OSMGraph, coefficient: number): void {
 }
 
 /** Stage 2: smooth gradients from high-visit edges to their neighbors */
-function smooth(graph: OSMGraph, factor: number): void {
+function smooth(graph: OSMGraph, factor: number, influenceThreshold: number): void {
   const visits = graph.edges.map(e => e.visits)
   let maxV = 0
   for (const v of visits) if (v > maxV) maxV = v
   if (maxV === 0) return
 
-  // Find top 10% edges (min 3 visits, or top 10% of max)
-  const threshold = Math.max(3, maxV * 0.1)
+  const threshold = Math.max(3, influenceThreshold)
   let active = graph.edges
     .map((e, i) => (e.visits >= threshold ? i : -1))
     .filter(i => i >= 0)
@@ -181,6 +182,6 @@ export function runPipeline(graph: OSMGraph, params: VisualizationParams): void 
     edge.visits = edge.originalVisits
   }
   spread(graph, params.spreadCoefficient)
-  smooth(graph, params.smoothingFactor)
+  smooth(graph, params.smoothingFactor, params.influenceThreshold)
   normalize(graph, params.transparencyThreshold)
 }

@@ -9,11 +9,13 @@ import { mapPointsToEdges } from '@/lib/mapPointsToEdges'
 import { runPipeline, computeBgIntensity, DEFAULT_PARAMS, type VisualizationParams } from '@/lib/algorithms'
 import { getEdgeColor, getEdgeWidth, PRESETS, DEFAULT_PRESET, type ColorPreset } from '@/lib/colorUtils'
 import type { CityMeta } from '@/lib/cities'
+import type { ExportRenderData } from '@/lib/exportRenderer'
 
 interface Props {
   points: TracePoint[]
   city?: CityMeta | null
   onBack: () => void
+  onExport: (data: ExportRenderData) => void
 }
 
 type LoadState = 'idle' | 'fetching' | 'processing' | 'ready' | 'error'
@@ -30,7 +32,7 @@ const DEFAULT_VIS_PARAMS: VisParams = {
   widthCap: 3,
 }
 
-export default function StyleView({ points, city = null, onBack }: Props) {
+export default function StyleView({ points, city = null, onBack, onExport }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const graphRef = useRef<OSMGraph | null>(null)
@@ -271,6 +273,20 @@ export default function StyleView({ points, city = null, onBack }: Props) {
   const setParam = (key: keyof VisParams, value: number) =>
     setParams(p => ({ ...p, [key]: value }))
 
+  function handleExport() {
+    const graph = graphRef.current
+    if (!graph || loadState !== 'ready') return
+    onExport({
+      processedEdges: [...graph.edges],
+      cityEdges,
+      bgMode,
+      bgOpacity,
+      bbox,
+      preset,
+      params: { baseWidth: params.baseWidth, widthCap: params.widthCap },
+    })
+  }
+
   const BG_OPTIONS: { value: BgMode; label: string; sub: string; disabled?: boolean }[] = [
     { value: 'spread', label: 'Street spread', sub: 'Fade from your trace outward' },
     {
@@ -290,6 +306,7 @@ export default function StyleView({ points, city = null, onBack }: Props) {
         <h2 className="text-sm font-medium text-text-primary">Style your trace</h2>
         <button
           disabled={loadState !== 'ready'}
+          onClick={handleExport}
           className="px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-purple to-accent-orange text-white disabled:opacity-30 hover:opacity-90 transition-all"
         >
           Export →
@@ -366,11 +383,12 @@ export default function StyleView({ points, city = null, onBack }: Props) {
           <div>
             <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Customize</p>
             <div className="flex flex-col gap-4">
-              <Slider label="Spread" value={params.spreadCoefficient} min={1} max={30} step={1} onChange={v => setParam('spreadCoefficient', v)} />
-              <Slider label="Smoothing" value={params.smoothingFactor} min={0.5} max={0.99} step={0.01} onChange={v => setParam('smoothingFactor', v)} />
-              <Slider label="Width" value={params.baseWidth} min={0.5} max={8} step={0.5} onChange={v => setParam('baseWidth', v)} />
-              <Slider label="Width cap" value={params.widthCap} min={1} max={14} step={0.5} onChange={v => setParam('widthCap', v)} />
-              <Slider label="Fade threshold" value={params.transparencyThreshold} min={0} max={30} step={1} onChange={v => setParam('transparencyThreshold', v)} />
+              <Slider label="Spread" value={params.spreadCoefficient} min={1} max={30} step={1} onChange={v => setParam('spreadCoefficient', v)} tooltip="How many hops your trace diffuses into neighboring streets" />
+              <Slider label="Smoothing" value={params.smoothingFactor} min={0.5} max={0.99} step={0.01} onChange={v => setParam('smoothingFactor', v)} tooltip="How gently color fades from busy to quiet streets" />
+              <Slider label="Width" value={params.baseWidth} min={0} max={3} step={0.1} onChange={v => setParam('baseWidth', v)} tooltip="Base thickness of all street lines" />
+              <Slider label="Width cap" value={params.widthCap} min={1} max={14} step={0.5} onChange={v => setParam('widthCap', v)} tooltip="Maximum thickness for your most-visited streets" />
+              <Slider label="Fade threshold" value={params.transparencyThreshold} min={0} max={30} step={1} onChange={v => setParam('transparencyThreshold', v)} tooltip="Bottom % of visited streets that fade to transparent" />
+              <Slider label="Influence threshold" value={params.influenceThreshold} min={1} max={20} step={1} onChange={v => setParam('influenceThreshold', v)} tooltip="Visits needed for a street to spread color to its neighbors" />
             </div>
           </div>
 
@@ -425,18 +443,29 @@ export default function StyleView({ points, city = null, onBack }: Props) {
   )
 }
 
-function Slider({ label, value, min, max, step, onChange }: {
+function Slider({ label, value, min, max, step, onChange, tooltip }: {
   label: string
   value: number
   min: number
   max: number
   step: number
   onChange: (v: number) => void
+  tooltip?: string
 }) {
   return (
     <div>
       <div className="flex justify-between mb-1">
-        <span className="text-xs text-text-muted">{label}</span>
+        <span className="relative group flex items-center gap-1 cursor-default">
+          <span className="text-xs text-text-muted">{label}</span>
+          {tooltip && (
+            <>
+              <span className="text-[10px] text-text-muted/40">ⓘ</span>
+              <span className="absolute bottom-full left-0 mb-2 w-48 bg-surface border border-border rounded-lg px-2.5 py-2 text-xs text-text-primary leading-snug opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
+                {tooltip}
+              </span>
+            </>
+          )}
+        </span>
         <span className="text-xs text-text-primary font-mono">{value}</span>
       </div>
       <input

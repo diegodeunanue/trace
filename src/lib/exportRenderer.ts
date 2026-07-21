@@ -41,6 +41,10 @@ export interface ExportRenderData {
   bbox: [number, number, number, number] // [minLng, minLat, maxLng, maxLat]
   preset: ColorPreset
   params: { baseWidth: number; widthCap: number }
+  /** Seeds the poster title — the city name when one was matched. */
+  cityName?: string
+  /** Seeds the poster subtitle — the year(s) the trace covers. */
+  period?: string
 }
 
 export const DEFAULT_MAP_RECT: MapRect = { x: 0, y: 0.15, w: 1, h: 0.70 }

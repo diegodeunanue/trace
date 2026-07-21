@@ -39,13 +39,14 @@ export default function UploadView({ onUpload }: Props) {
 
   return (
     <div className="h-full w-full flex flex-col items-center justify-center bg-bg px-6">
-      {/* Logo */}
-      <div className="mb-12 text-center">
-        <h1 className="text-5xl font-light tracking-tight bg-gradient-to-r from-accent-purple to-accent-orange bg-clip-text text-transparent">
-          Trace
+      {/* Intro */}
+      <div className="mb-10 text-center max-w-lg">
+        <h1 className="text-3xl font-light tracking-tight text-text-primary">
+          Drop in your location history
         </h1>
-        <p className="mt-3 text-text-muted text-sm tracking-wide">
-          Your life, traced.
+        <p className="mt-3 text-text-muted text-sm leading-relaxed">
+          Trace turns it into a clean, poster-quality geographical illustration —
+          a trip, a honeymoon, or a whole year on one print.
         </p>
       </div>
 
@@ -77,8 +78,11 @@ export default function UploadView({ onUpload }: Props) {
           </div>
         ) : (
           <div className="flex flex-col items-center gap-3 text-center px-8">
-            <div className="w-12 h-12 rounded-full bg-surface flex items-center justify-center text-2xl">
-              📍
+            <div className="w-12 h-12 rounded-full bg-surface flex items-center justify-center text-accent-purple">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
+                <circle cx="12" cy="10" r="3" />
+              </svg>
             </div>
             <p className="text-text-primary text-sm font-medium">
               Drop your Timeline JSON here
@@ -94,9 +98,13 @@ export default function UploadView({ onUpload }: Props) {
         <p className="mt-4 text-red-400 text-xs text-center max-w-sm">{error}</p>
       )}
 
-      {/* Privacy note */}
-      <p className="mt-8 text-text-muted text-xs text-center max-w-xs leading-relaxed">
-        100% local processing. Your data never leaves your browser.
+      {/* Privacy note — restated at the exact moment it matters, next to the
+          file picker. Deliberately precise about the one network call the app
+          does make, so the claim holds up if someone opens the network tab. */}
+      <p className="mt-8 text-text-muted text-xs text-center max-w-md leading-relaxed">
+        Your file is read in this tab and never sent anywhere. The only thing Trace
+        requests from the network is public street-map data for the area you pick —
+        never your file, and nothing at all for the sample cities.
       </p>
 
       {/* How to get your data */}

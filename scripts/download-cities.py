@@ -76,7 +76,12 @@ CITIES = [
 ]
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-OVERPASS_URL  = "https://overpass-api.de/api/interpreter"
+# Tried in order; the main instance 504s regularly on large boundaries.
+OVERPASS_URLS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.jp/api/interpreter",
+]
 OUTPUT_DIR    = Path(__file__).parent.parent / "public" / "cities"
 DELAY_SECONDS = 10  # be polite to the APIs
 
@@ -110,7 +115,7 @@ def build_query(relation_id: int, detail: str) -> str:
     # Streets within the exact OSM admin boundary — no rectangular clipping
     hw = HIGHWAY_FILTERS[detail]
     return (
-        f"[out:json][timeout:90];"
+        f"[out:json][timeout:180];"
         f"rel({relation_id});"
         f"map_to_area->.a;"
         f'(way["highway"~"{hw}"](area.a););'
@@ -118,19 +123,49 @@ def build_query(relation_id: int, detail: str) -> str:
     )
 
 
-def fetch_city(city: dict, detail: str) -> dict:
-    rel_id = get_osm_relation_id(city["search"])
-    print(f"relation {rel_id}", end=" ", flush=True)
-
-    query = build_query(rel_id, detail)
-    resp = requests.post(
-        OVERPASS_URL,
-        data={"data": query},
-        headers={"User-Agent": "trace-app/1.0 (city background downloader)"},
-        timeout=120,
+def build_bbox_query(bbox: list, detail: str) -> str:
+    """
+    Streets inside a plain rectangle. Useful when the admin boundary is far
+    larger than the area of interest — a whole municipality at `detailed` can
+    run to tens of MB, which is not something to serve on a static page.
+    """
+    hw = HIGHWAY_FILTERS[detail]
+    min_lng, min_lat, max_lng, max_lat = bbox
+    # Overpass bbox order is south,west,north,east
+    ob = f"{min_lat},{min_lng},{max_lat},{max_lng}"
+    return (
+        f"[out:json][timeout:180];"
+        f'(way["highway"~"{hw}"]({ob}););'
+        f"out body;>;out skel qt;"
     )
-    resp.raise_for_status()
-    return resp.json()
+
+
+def fetch_city(city: dict, detail: str, bbox: list = None, attempts: int = 2) -> dict:
+    if bbox:
+        print("bbox", end=" ", flush=True)
+        query = build_bbox_query(bbox, detail)
+    else:
+        rel_id = get_osm_relation_id(city["search"])
+        print(f"relation {rel_id}", end=" ", flush=True)
+        query = build_query(rel_id, detail)
+    last_err = None
+    for attempt in range(attempts):
+        for url in OVERPASS_URLS:
+            try:
+                resp = requests.post(
+                    url,
+                    data={"data": query},
+                    headers={"User-Agent": "trace-app/1.0 (city background downloader)"},
+                    timeout=300,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as e:  # noqa: BLE001 — any endpoint failure moves to the next
+                last_err = e
+                print(f"\n    {url.split('//')[1].split('/')[0]} failed ({e}); trying next",
+                      end=" ", flush=True)
+                time.sleep(5)
+    raise RuntimeError(f"all Overpass endpoints failed: {last_err}")
 
 
 def build_coords(data: dict) -> list:
@@ -155,6 +190,14 @@ def build_coords(data: dict) -> list:
     return coords
 
 
+def round_coords(coords: list, dp: int = 5) -> list:
+    """
+    OSM ships 7 decimal places (~1 cm). 5dp is ~1 m — far past what a street
+    render resolves — and trims roughly 15% off the file before compression.
+    """
+    return [[[round(x, dp), round(y, dp)] for x, y in seg] for seg in coords]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Download city street networks from OSM.")
     parser.add_argument(
@@ -170,7 +213,21 @@ def main():
             "detailed = + residential/service/unclassified"
         ),
     )
+    parser.add_argument(
+        "--bbox", default=None,
+        help=(
+            "Clip to a rectangle instead of the city's admin boundary: "
+            "minLng,minLat,maxLng,maxLat. Use when the boundary is much larger "
+            "than the area you need at this detail level."
+        ),
+    )
     args = parser.parse_args()
+
+    bbox = None
+    if args.bbox:
+        bbox = [float(x) for x in args.bbox.split(",")]
+        if len(bbox) != 4:
+            parser.error("--bbox needs 4 comma-separated numbers: minLng,minLat,maxLng,maxLat")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -189,8 +246,8 @@ def main():
         print(f"[{i+1}/{len(targets)}] {city['name']} ...", end=" ", flush=True)
 
         try:
-            data   = fetch_city(city, args.detail)
-            coords = build_coords(data)
+            data   = fetch_city(city, args.detail, bbox)
+            coords = round_coords(build_coords(data))
             print(f"→ {len(coords):,} segments", end=" ")
 
             payload = {"id": city["id"], "name": city["name"], "coords": coords}

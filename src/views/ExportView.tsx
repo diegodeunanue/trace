@@ -31,8 +31,8 @@ interface InteractState {
 export default function ExportView({ data, onBack }: Props) {
   const [format, setFormat]           = useState<ExportFormat>('sandwich')
   const [orientation, setOrientation] = useState<ExportOrientation>('vertical')
-  const [title, setTitle]             = useState('YOUR CITY')
-  const [subtitle, setSubtitle]       = useState('2024')
+  const [title, setTitle]             = useState(data.cityName ?? 'YOUR CITY')
+  const [subtitle, setSubtitle]       = useState(data.period ?? '2024')
   const [mapRect, setMapRect]         = useState<MapRect>(DEFAULT_MAP_RECT)
   const [textPosition, setTextPosition] = useState(0.5)
   const [fontLoaded, setFontLoaded]   = useState(false)

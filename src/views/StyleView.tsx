@@ -14,6 +14,8 @@ import type { ExportRenderData } from '@/lib/exportRenderer'
 interface Props {
   points: TracePoint[]
   city?: CityMeta | null
+  /** Overrides the back button text — the demo has no scope step to return to. */
+  backLabel?: string
   onBack: () => void
   onExport: (data: ExportRenderData) => void
 }
@@ -32,7 +34,7 @@ const DEFAULT_VIS_PARAMS: VisParams = {
   widthCap: 3,
 }
 
-export default function StyleView({ points, city = null, onBack, onExport }: Props) {
+export default function StyleView({ points, city = null, backLabel, onBack, onExport }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const graphRef = useRef<OSMGraph | null>(null)
@@ -108,7 +110,13 @@ export default function StyleView({ points, city = null, onBack, onExport }: Pro
       })
     })
 
-    return () => { map.remove(); mapRef.current = null }
+    // MapLibre caches the container size at construction. Inside a flex column
+    // the final height is not settled yet, so the canvas sticks at a stale size
+    // and every fitBounds computes the wrong zoom. Track the container instead.
+    const ro = new ResizeObserver(() => map.resize())
+    ro.observe(mapContainer.current)
+
+    return () => { ro.disconnect(); map.remove(); mapRef.current = null }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -210,6 +218,51 @@ export default function StyleView({ points, city = null, onBack, onExport }: Pro
     }
   }, [bgMode, cityEdges, bbox])
 
+  /**
+   * Frame the art, not the input. The raw point bbox is a poor guide: a single
+   * airport transfer or bad GPS fix stretches it far past where the trace
+   * actually lives, leaving the interesting part as a speck in one corner.
+   * Framing on the streets that actually lit up — trimmed to the 2nd-98th
+   * percentile so a lone outlying street does not undo the point — puts the
+   * composition on screen the way it will print.
+   */
+  useEffect(() => {
+    if (loadState !== 'ready' || !mapReady) return
+    const map = mapRef.current
+    const graph = graphRef.current
+    if (!map) return
+
+    /**
+     * Weighted by visit count, not by street. A week of walking one
+     * neighbourhood produces a few heavily-visited streets and a long tail of
+     * single-visit ones scattered across the city; counting streets equally
+     * lets that tail dictate the frame. Weighting by visits follows where the
+     * time actually went.
+     */
+    const wPct = (vals: { v: number; w: number }[], p: number) => {
+      const sorted = [...vals].sort((a, b) => a.v - b.v)
+      const total = sorted.reduce((s, x) => s + x.w, 0)
+      let acc = 0
+      for (const x of sorted) {
+        acc += x.w
+        if (acc >= total * p) return x.v
+      }
+      return sorted[sorted.length - 1].v
+    }
+
+    let frame = bbox
+    const visited = graph?.edges.filter(e => e.originalVisits > 0) ?? []
+    if (visited.length >= 20) {
+      const lngs = visited.map(e => ({ v: (e.coords[0][0] + e.coords[1][0]) / 2, w: e.originalVisits }))
+      const lats = visited.map(e => ({ v: (e.coords[0][1] + e.coords[1][1]) / 2, w: e.originalVisits }))
+      frame = [wPct(lngs, 0.02), wPct(lats, 0.02), wPct(lngs, 0.98), wPct(lats, 0.98)]
+    }
+
+    map.resize()
+    map.fitBounds([[frame[0], frame[1]], [frame[2], frame[3]]], { padding: 60, duration: 0 })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadState, mapReady])
+
   const bgAlpha = Math.round(bgOpacity * 2.55) // bgOpacity 0–100 → alpha 0–255
 
   // City grid: show every downloaded city edge at uniform opacity.
@@ -276,7 +329,17 @@ export default function StyleView({ points, city = null, onBack, onExport }: Pro
   function handleExport() {
     const graph = graphRef.current
     if (!graph || loadState !== 'ready') return
+
+    // Seed the poster with what we already know, so the visitor lands on a
+    // finished thing rather than a placeholder they have to fill in.
+    const years = [...new Set(points.map(p => p.timestamp.getFullYear()))].sort()
+    const period = years.length === 0 ? undefined
+      : years.length === 1 ? String(years[0])
+      : `${years[0]}–${years[years.length - 1]}`
+
     onExport({
+      cityName: city?.name.toUpperCase(),
+      period,
       processedEdges: [...graph.edges],
       cityEdges,
       bgMode,
@@ -302,7 +365,7 @@ export default function StyleView({ points, city = null, onBack, onExport }: Pro
     <div className="h-full w-full flex flex-col bg-bg">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-        <button onClick={onBack} className="text-text-muted hover:text-text-primary text-sm transition-colors">← Back</button>
+        <button onClick={onBack} className="text-text-muted hover:text-text-primary text-sm transition-colors">← {backLabel ?? 'Back'}</button>
         <h2 className="text-sm font-medium text-text-primary">Style your trace</h2>
         <button
           disabled={loadState !== 'ready'}
@@ -409,7 +472,11 @@ export default function StyleView({ points, city = null, onBack, onExport }: Pro
 
         {/* Map + deck.gl overlay */}
         <div className="flex-1 relative">
-          <div ref={mapContainer} className="absolute inset-0" />
+          {/* Inline positioning is deliberate: maplibre-gl.css sets
+              `.maplibregl-map { position: relative }` and is bundled after
+              Tailwind's utilities, so a `absolute inset-0` class is overridden
+              and the container collapses to zero height. Inline style wins. */}
+          <div ref={mapContainer} style={{ position: 'absolute', inset: 0 }} />
 
           {/* Map controls */}
           <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">

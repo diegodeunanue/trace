@@ -1,0 +1,12 @@
+# Everything under public/ is copied verbatim into the build output and served,
+# so any city network sitting there locally gets deployed whether the app uses
+# it or not. .gitignore does not apply to Vercel uploads. Keep the deploy to the
+# two cities the demo actually loads.
+public/cities/*
+!public/cities/buenos-aires.json
+!public/cities/sao-paulo.json
+
+# Local-only artefacts
+.venv
+data_viz.html
+dist

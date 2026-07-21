@@ -7,14 +7,25 @@ import type { TracePoint } from '@/lib/parseTimeline'
 import { fetchOSMNetwork, buildGraphFromCoords, type OSMEdge, type OSMGraph } from '@/lib/fetchOSMNetwork'
 import { mapPointsToEdges } from '@/lib/mapPointsToEdges'
 import { runPipeline, computeBgIntensity, DEFAULT_PARAMS, type VisualizationParams } from '@/lib/algorithms'
-import { getEdgeColor, getEdgeWidth, PRESETS, DEFAULT_PRESET, type ColorPreset } from '@/lib/colorUtils'
+import { getEdgeColor, getEdgeWidth, PRESETS, type ColorPreset } from '@/lib/colorUtils'
 import type { CityMeta } from '@/lib/cities'
 import type { ExportRenderData } from '@/lib/exportRenderer'
+import { formatCoords, formatPeriod, formatYears } from '@/lib/traceMeta'
+import Shell, { NavLink, PrimaryButton, SectionLabel } from '@/components/gallery/Shell'
+import FramedPoster from '@/components/gallery/FramedPoster'
+import { WallLabel, SampleTabs, Palette, Disclosure, GallerySlider } from '@/components/gallery/controls'
+
+export interface SampleTab { id: string; label: string }
 
 interface Props {
   points: TracePoint[]
   city?: CityMeta | null
-  /** Overrides the back button text — the demo has no scope step to return to. */
+  preset: ColorPreset
+  onPresetChange: (p: ColorPreset) => void
+  /** Sample switcher — omitted when the visitor is on their own data. */
+  samples?: SampleTab[]
+  activeSampleId?: string
+  onSelectSample?: (t: SampleTab) => void
   backLabel?: string
   onBack: () => void
   onExport: (data: ExportRenderData) => void
@@ -34,7 +45,32 @@ const DEFAULT_VIS_PARAMS: VisParams = {
   widthCap: 3,
 }
 
-export default function StyleView({ points, city = null, backLabel, onBack, onExport }: Props) {
+const BG_LABELS: Record<BgMode, string> = {
+  spread: 'Street spread',
+  city: 'City grid',
+  off: 'Off',
+}
+
+/** Mobile gets a different layout, not a reflow of the desktop rail. */
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return narrow
+}
+
+export default function StyleView({
+  points, city = null, preset, onPresetChange,
+  samples, activeSampleId, onSelectSample,
+  backLabel, onBack, onExport,
+}: Props) {
+  const isNarrow = useIsNarrow()
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const graphRef = useRef<OSMGraph | null>(null)
@@ -42,24 +78,23 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
   const [loadState, setLoadState] = useState<LoadState>('idle')
   const [loadMsg, setLoadMsg] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [preset, setPreset] = useState<ColorPreset>(DEFAULT_PRESET)
   const [params, setParams] = useState<VisParams>(DEFAULT_VIS_PARAMS)
   const [processedEdges, setProcessedEdges] = useState<OSMEdge[]>([])
   // Raw city coords stored separately so the city background always shows the
   // full downloaded city grid, independent of the trace pipeline.
   const [cityEdges, setCityEdges] = useState<[number, number][][]>([])
-
   const [mapReady, setMapReady] = useState(false)
+  const [adjustOpen, setAdjustOpen] = useState(false)
 
   const [bgMode, setBgMode] = useState<BgMode>(city ? 'city' : 'spread')
   const [bgOpacity, setBgOpacity] = useState(20) // 0–100
   const [bgSpread, setBgSpread] = useState(10)   // 0–50 hops
 
-  // Compute bbox from points
   const bbox = (() => {
     const lats = points.map(p => p.lat)
     const lngs = points.map(p => p.lng)
-    return [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)] as [number, number, number, number]
+    return [Math.min(...lngs), Math.min(...lats), Math.max(...lngs), Math.max(...lats)] as
+      [number, number, number, number]
   })()
 
   // Small fixed buffer so GPS points right at the edge still snap to edges
@@ -68,7 +103,6 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
   const centerLng = (bbox[0] + bbox[2]) / 2
   const centerLat = (bbox[1] + bbox[3]) / 2
 
-  // deck.gl view state — synced to MapLibre via move listener
   const [viewState, setViewState] = useState({
     longitude: centerLng,
     latitude: centerLat,
@@ -77,7 +111,6 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
     bearing: 0,
   })
 
-  // Init map — includes CartoDB tile source/layer (hidden by default)
   useEffect(() => {
     if (!mapContainer.current || mapRef.current) return
     const map = new maplibregl.Map({
@@ -85,20 +118,16 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
       style: {
         version: 8,
         sources: {},
-        layers: [
-          { id: 'bg', type: 'background', paint: { 'background-color': preset.background } },
-        ],
+        layers: [{ id: 'bg', type: 'background', paint: { 'background-color': preset.background } }],
       },
       center: [centerLng, centerLat],
       zoom: 12,
       interactive: true,
+      attributionControl: false,
     })
     mapRef.current = map
 
-    map.on('load', () => {
-      setMapReady(true)
-    })
-
+    map.on('load', () => setMapReady(true))
     map.on('move', () => {
       const c = map.getCenter()
       setViewState({
@@ -110,25 +139,28 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
       })
     })
 
-    // MapLibre caches the container size at construction. Inside a flex column
-    // the final height is not settled yet, so the canvas sticks at a stale size
-    // and every fitBounds computes the wrong zoom. Track the container instead.
+    // MapLibre caches the container size at construction. The frame around the
+    // artwork is measured and can settle a frame later, so track it.
     const ro = new ResizeObserver(() => map.resize())
     ro.observe(mapContainer.current)
 
-    return () => { ro.disconnect(); map.remove(); mapRef.current = null }
+    return () => {
+      ro.disconnect()
+      map.remove()
+      mapRef.current = null
+      setMapReady(false)
+    }
+  // The artwork sits in a framed box on desktop and full-bleed on mobile, so
+  // crossing the breakpoint hands MapLibre a different container node. Rebuild
+  // rather than leave the map bound to a node that is no longer in the tree.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [isNarrow])
 
-  // Update MapLibre background color when preset changes
   useEffect(() => {
     if (!mapReady) return
     mapRef.current?.setPaintProperty('bg', 'background-color', preset.background)
   }, [preset, mapReady])
 
-  // Load street network + run pipeline (once on mount)
-  // When a city is selected: load pre-downloaded city JSON → skip Overpass entirely
-  // When no city: fetch from Overpass with fallback endpoints
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -148,23 +180,21 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
           await new Promise(r => setTimeout(r, 30))
           graph = buildGraphFromCoords(data.coords)
         } else {
-          graph = await fetchOSMNetwork(bbox, msg => {
-            if (!cancelled) setLoadMsg(msg)
-          }, bgPad)
+          graph = await fetchOSMNetwork(bbox, msg => { if (!cancelled) setLoadMsg(msg) }, bgPad)
         }
 
         if (cancelled) return
         graphRef.current = graph
 
         setLoadState('processing')
-        setLoadMsg('Mapping your traces to streets...')
+        setLoadMsg('Mapping your traces to streets…')
         await new Promise(r => setTimeout(r, 50))
         mapPointsToEdges(points, graph, pct => {
-          if (!cancelled) setLoadMsg(`Mapping points... ${Math.round(pct * 100)}%`)
+          if (!cancelled) setLoadMsg(`Mapping points… ${Math.round(pct * 100)}%`)
         })
 
         if (cancelled) return
-        setLoadMsg('Running visualization pipeline...')
+        setLoadMsg('Running visualization pipeline…')
         await new Promise(r => setTimeout(r, 50))
         runPipeline(graph, params)
         computeBgIntensity(graph, bgSpread)
@@ -184,7 +214,6 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Re-run pipeline + bg intensity when params or bgSpread change
   const rerunAll = useCallback(() => {
     const graph = graphRef.current
     if (!graph || loadState !== 'ready') return
@@ -198,32 +227,12 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
     rerunAll()
   }, [params, bgSpread, rerunAll, loadState])
 
-  // Fit the camera to the data being drawn — called by the Center button.
-  const fitToData = useCallback(() => {
-    const map = mapRef.current
-    if (!map) return
-    if (bgMode === 'city' && cityEdges.length > 0) {
-      let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity
-      for (const seg of cityEdges) {
-        for (const [lng, lat] of seg) {
-          if (lng < minLng) minLng = lng
-          if (lng > maxLng) maxLng = lng
-          if (lat < minLat) minLat = lat
-          if (lat > maxLat) maxLat = lat
-        }
-      }
-      map.fitBounds([[minLng, minLat], [maxLng, maxLat]], { padding: 40, duration: 600 })
-    } else {
-      map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 600 })
-    }
-  }, [bgMode, cityEdges, bbox])
-
   /**
    * Frame the art, not the input. The raw point bbox is a poor guide: a single
    * airport transfer or bad GPS fix stretches it far past where the trace
-   * actually lives, leaving the interesting part as a speck in one corner.
-   * Framing on the streets that actually lit up — trimmed to the 2nd-98th
-   * percentile so a lone outlying street does not undo the point — puts the
+   * actually lives, leaving the interesting part a speck in one corner. Framing
+   * on the streets that actually lit up — weighted by visit count, so a long
+   * tail of single-visit streets across town cannot drag the frame — puts the
    * composition on screen the way it will print.
    */
   useEffect(() => {
@@ -232,13 +241,6 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
     const graph = graphRef.current
     if (!map) return
 
-    /**
-     * Weighted by visit count, not by street. A week of walking one
-     * neighbourhood produces a few heavily-visited streets and a long tail of
-     * single-visit ones scattered across the city; counting streets equally
-     * lets that tail dictate the frame. Weighting by visits follows where the
-     * time actually went.
-     */
     const wPct = (vals: { v: number; w: number }[], p: number) => {
       const sorted = [...vals].sort((a, b) => a.v - b.v)
       const total = sorted.reduce((s, x) => s + x.w, 0)
@@ -259,25 +261,24 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
     }
 
     map.resize()
-    map.fitBounds([[frame[0], frame[1]], [frame[2], frame[3]]], { padding: 60, duration: 0 })
+    // On mobile the sheet covers the lower part of the canvas, so the work has
+    // to be framed into the strip that is actually visible above it.
+    const padding = isNarrow
+      ? { top: 72, bottom: Math.round(window.innerHeight * 0.44), left: 20, right: 20 }
+      : 24
+    map.fitBounds([[frame[0], frame[1]], [frame[2], frame[3]]], { padding, duration: 0 })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadState, mapReady])
+  }, [loadState, mapReady, isNarrow])
 
-  const bgAlpha = Math.round(bgOpacity * 2.55) // bgOpacity 0–100 → alpha 0–255
+  const bgAlpha = Math.round(bgOpacity * 2.55)
 
-  // City grid: show every downloaded city edge at uniform opacity.
-  // Uses raw cityEdges (direct from city JSON) so the full city is always
-  // rendered regardless of what the trace pipeline produces.
   const cityLayer = bgMode === 'city' && cityEdges.length > 0
     ? [new PathLayer({
         id: 'city-grid',
         data: cityEdges,
         getPath: (seg: [number, number][]) => seg,
         getColor: [
-          preset.baseStreetColor[0],
-          preset.baseStreetColor[1],
-          preset.baseStreetColor[2],
-          bgAlpha,
+          preset.baseStreetColor[0], preset.baseStreetColor[1], preset.baseStreetColor[2], bgAlpha,
         ] as [number, number, number, number],
         getWidth: preset.baseStreetWidth,
         widthUnits: 'pixels',
@@ -295,9 +296,7 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
         data: processedEdges,
         getPath: (e: OSMEdge) => e.coords,
         getColor: (e: OSMEdge) => [
-          preset.baseStreetColor[0],
-          preset.baseStreetColor[1],
-          preset.baseStreetColor[2],
+          preset.baseStreetColor[0], preset.baseStreetColor[1], preset.baseStreetColor[2],
           Math.round(e.bgIntensity * bgAlpha),
         ] as [number, number, number, number],
         getWidth: preset.baseStreetWidth,
@@ -316,10 +315,7 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
       widthUnits: 'pixels',
       widthMinPixels: 0.5,
       pickable: false,
-      updateTriggers: {
-        getColor: [preset.id, params],
-        getWidth: [params],
-      },
+      updateTriggers: { getColor: [preset.id, params], getWidth: [params] },
     }),
   ]
 
@@ -329,17 +325,9 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
   function handleExport() {
     const graph = graphRef.current
     if (!graph || loadState !== 'ready') return
-
-    // Seed the poster with what we already know, so the visitor lands on a
-    // finished thing rather than a placeholder they have to fill in.
-    const years = [...new Set(points.map(p => p.timestamp.getFullYear()))].sort()
-    const period = years.length === 0 ? undefined
-      : years.length === 1 ? String(years[0])
-      : `${years[0]}–${years[years.length - 1]}`
-
     onExport({
       cityName: city?.name.toUpperCase(),
-      period,
+      period: formatYears(points),
       processedEdges: [...graph.edges],
       cityEdges,
       bgMode,
@@ -350,200 +338,202 @@ export default function StyleView({ points, city = null, backLabel, onBack, onEx
     })
   }
 
-  const BG_OPTIONS: { value: BgMode; label: string; sub: string; disabled?: boolean }[] = [
-    { value: 'spread', label: 'Street spread', sub: 'Fade from your trace outward' },
-    {
-      value: 'city',
-      label: city ? `${city.name} grid` : 'City grid',
-      sub: city ? 'Full city street skeleton' : 'No city selected — go back to Scope',
-      disabled: !city,
-    },
-    { value: 'off', label: 'Off', sub: 'Solid background only' },
-  ]
+  const title = city?.name ?? 'Your trace'
 
-  return (
-    <div className="h-full w-full flex flex-col bg-bg">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-        <button onClick={onBack} className="text-text-muted hover:text-text-primary text-sm transition-colors">← {backLabel ?? 'Back'}</button>
-        <h2 className="text-sm font-medium text-text-primary">Style your trace</h2>
-        <button
-          disabled={loadState !== 'ready'}
-          onClick={handleExport}
-          className="px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-purple to-accent-orange text-white disabled:opacity-30 hover:opacity-90 transition-all"
+  const artwork = (
+    <>
+      <div ref={mapContainer} style={{ position: 'absolute', inset: 0 }} />
+      <DeckGL
+        style={{ position: 'absolute', top: '0', left: '0', right: '0', bottom: '0', pointerEvents: 'none' }}
+        viewState={viewState}
+        onViewStateChange={({ viewState: vs }) => setViewState(vs as typeof viewState)}
+        controller={false}
+        layers={layers}
+      />
+      {loadState !== 'ready' && (
+        <div className="absolute inset-0 flex items-center justify-center bg-mat">
+          <p className="font-mono text-[9px] uppercase tracking-[.22em] text-muted text-center px-6">
+            {loadState === 'error' ? error : loadMsg || 'Preparing'}
+          </p>
+        </div>
+      )}
+    </>
+  )
+
+  const sliders = (
+    <>
+      <GallerySlider label="Spread" value={params.spreadCoefficient} min={1} max={30} step={1}
+        onChange={v => setParam('spreadCoefficient', v)} />
+      <GallerySlider label="Smoothing" value={params.smoothingFactor} min={0.5} max={0.99} step={0.01}
+        onChange={v => setParam('smoothingFactor', v)} />
+      <GallerySlider label="Width" value={params.baseWidth} min={0} max={3} step={0.1}
+        onChange={v => setParam('baseWidth', v)} />
+      <GallerySlider label="Width cap" value={params.widthCap} min={1} max={14} step={0.5}
+        onChange={v => setParam('widthCap', v)} />
+      <GallerySlider label="Fade threshold" value={params.transparencyThreshold} min={0} max={30} step={1}
+        onChange={v => setParam('transparencyThreshold', v)} />
+      <GallerySlider label="Influence" value={params.influenceThreshold} min={1} max={20} step={1}
+        onChange={v => setParam('influenceThreshold', v)} />
+    </>
+  )
+
+  // ── Mobile: the work is full-bleed and the controls ride over it in a sheet.
+  if (isNarrow) {
+    return (
+      <div className="h-full w-full relative overflow-hidden" style={{ background: preset.background }}>
+        <div className="absolute inset-0">{artwork}</div>
+
+        {/* A scrim, not a bar: the status row has to stay legible over a dark
+            Glow render and a cream Light one alike. */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 top-0 h-24 pointer-events-none"
+          style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,.45), transparent)' }}
+        />
+        <div className="absolute inset-x-0 top-0 flex items-center justify-between px-5 py-4">
+          <span className="font-sans text-[16px] font-semibold lowercase tracking-[.34em] text-mat">
+            trace
+          </span>
+          <span className="flex items-center gap-2 font-mono text-[9px] uppercase tracking-[.18em] text-mat/85">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#8FD18F' }} />
+            In-browser
+          </span>
+        </div>
+
+        <div
+          className="absolute inset-x-0 bottom-0 bg-mat shadow-sheet px-5 pt-3 pb-6 flex flex-col gap-4 overflow-y-auto"
+          style={{ borderRadius: '22px 22px 0 0', maxHeight: adjustOpen ? '72%' : undefined }}
         >
-          Export →
-        </button>
-      </div>
+          <span className="mx-auto w-9 h-1 rounded-full bg-line shrink-0" />
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left panel */}
-        <div className="w-64 shrink-0 border-r border-border p-4 flex flex-col gap-5 overflow-y-auto">
-
-          {/* Presets */}
-          <div>
-            <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Preset</p>
-            <div className="grid grid-cols-2 gap-2">
-              {PRESETS.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setPreset(p)}
-                  className={`
-                    py-2 px-3 rounded-lg text-xs font-medium border transition-all
-                    ${preset.id === p.id
-                      ? 'border-accent-purple text-accent-purple bg-accent-purple/10'
-                      : 'border-border text-text-muted hover:border-accent-purple/50'
-                    }
-                  `}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-baseline justify-between">
+            <h2 className="font-sans text-[21px] font-medium">{title}</h2>
+            <button
+              onClick={() => setAdjustOpen(o => !o)}
+              className="font-mono text-[9px] uppercase tracking-[.18em] text-muted"
+            >
+              Adjust {adjustOpen ? '▾' : '▴'}
+            </button>
           </div>
 
-          {/* Background mode */}
-          <div>
-            <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Background</p>
-            <div className="flex flex-col gap-1 mb-3">
-              {BG_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  disabled={opt.disabled}
-                  onClick={() => setBgMode(opt.value)}
-                  className={`flex items-start gap-2.5 py-1.5 px-1 rounded-lg text-left w-full transition-colors ${
-                    opt.disabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-surface'
-                  }`}
-                >
-                  <span className={`mt-0.5 w-3.5 h-3.5 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors ${
-                    bgMode === opt.value ? 'border-accent-purple' : 'border-border'
-                  }`}>
-                    {bgMode === opt.value && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-accent-purple" />
-                    )}
-                  </span>
-                  <span className="flex flex-col">
-                    <span className={`text-xs font-medium leading-tight ${bgMode === opt.value ? 'text-text-primary' : 'text-text-muted'}`}>
-                      {opt.label}
-                    </span>
-                    <span className="text-xs text-text-muted leading-tight mt-0.5">{opt.sub}</span>
-                  </span>
-                </button>
-              ))}
-            </div>
+          <p className="font-mono text-[10px] tracking-[.03em] text-muted -mt-2">
+            {formatCoords(points)} · {formatPeriod(points)}
+          </p>
 
-            {bgMode !== 'off' && (
-              <div className="flex flex-col gap-3">
-                <Slider label="Opacity" value={bgOpacity} min={0} max={100} step={2} onChange={setBgOpacity} />
-                {bgMode === 'spread' && (
-                  <Slider label="Spread" value={bgSpread} min={0} max={50} step={1} onChange={setBgSpread} />
+          {samples && samples.length > 1 && activeSampleId && onSelectSample && (
+            <SampleTabs items={samples} activeId={activeSampleId} onSelect={onSelectSample} />
+          )}
+
+          <Palette presets={PRESETS} activeId={preset.id} onSelect={onPresetChange} />
+
+          {adjustOpen && <div className="flex flex-col gap-4 pt-1">{sliders}</div>}
+
+          <div className="flex items-stretch gap-3 pt-1">
+            {!adjustOpen && (
+              <button
+                onClick={() => setAdjustOpen(true)}
+                className="flex-1 border border-line rounded-sm py-3 font-sans text-[11px]
+                           font-medium uppercase tracking-[.16em]"
+              >
+                Adjust 6
+              </button>
+            )}
+            <div className={adjustOpen ? 'w-full' : 'flex-1'}>
+              <PrimaryButton full onClick={handleExport} disabled={loadState !== 'ready'}>
+                Export →
+              </PrimaryButton>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Shell
+      screenLabel="Style"
+      navLeft={<NavLink onClick={onBack}>← {backLabel ?? 'back'}</NavLink>}
+      navRight={
+        <span className="font-mono text-[10px] tracking-[.12em] text-muted">N° 001 / ∞</span>
+      }
+    >
+      <div className="h-full w-full flex">
+        {/* The work */}
+        <div className="flex-1 min-w-0 relative">
+          <FramedPoster canvasBg={preset.background}>{artwork}</FramedPoster>
+        </div>
+
+        {/* The rail */}
+        <aside className="w-[352px] shrink-0 border-l border-line px-8 py-9 flex flex-col gap-7 overflow-y-auto">
+          <WallLabel
+            edition="Trace · N° 001"
+            title={title}
+            coords={formatCoords(points)}
+            dates={formatPeriod(points)}
+          />
+
+          {samples && samples.length > 1 && activeSampleId && onSelectSample && (
+            <div>
+              <SectionLabel>Sample</SectionLabel>
+              <SampleTabs items={samples} activeId={activeSampleId} onSelect={onSelectSample} />
+            </div>
+          )}
+
+          <div>
+            <SectionLabel>Palette</SectionLabel>
+            <Palette presets={PRESETS} activeId={preset.id} onSelect={onPresetChange} />
+          </div>
+
+          <div className="border-t border-line pt-1">
+            <Disclosure
+              label="Adjust"
+              summary={`${adjustOpen ? '' : '6 params'}`}
+              open={adjustOpen}
+              onToggle={() => setAdjustOpen(o => !o)}
+            >
+              {sliders}
+
+              <div className="pt-3 mt-1 border-t border-line">
+                <SectionLabel>Ground</SectionLabel>
+                <div className="flex items-center gap-4 mb-4">
+                  {(Object.keys(BG_LABELS) as BgMode[]).map(mode => {
+                    const disabled = mode === 'city' && !city
+                    const active = bgMode === mode
+                    return (
+                      <button
+                        key={mode}
+                        disabled={disabled}
+                        onClick={() => setBgMode(mode)}
+                        className={`font-mono text-[9px] uppercase tracking-[.16em] pb-0.5 border-b transition-all ${
+                          active ? 'border-ink opacity-100' : 'border-transparent opacity-45 hover:opacity-80'
+                        } ${disabled ? 'opacity-20 cursor-not-allowed hover:opacity-20' : ''}`}
+                      >
+                        {BG_LABELS[mode]}
+                      </button>
+                    )
+                  })}
+                </div>
+                {bgMode !== 'off' && (
+                  <div className="flex flex-col gap-4">
+                    <GallerySlider label="Ground opacity" value={bgOpacity} min={0} max={100} step={2}
+                      onChange={setBgOpacity} />
+                    {bgMode === 'spread' && (
+                      <GallerySlider label="Ground spread" value={bgSpread} min={0} max={50} step={1}
+                        onChange={setBgSpread} />
+                    )}
+                  </div>
                 )}
               </div>
-            )}
+            </Disclosure>
           </div>
 
-          {/* Trace params */}
-          <div>
-            <p className="text-xs text-text-muted uppercase tracking-wider mb-3">Customize</p>
-            <div className="flex flex-col gap-4">
-              <Slider label="Spread" value={params.spreadCoefficient} min={1} max={30} step={1} onChange={v => setParam('spreadCoefficient', v)} tooltip="How many hops your trace diffuses into neighboring streets" />
-              <Slider label="Smoothing" value={params.smoothingFactor} min={0.5} max={0.99} step={0.01} onChange={v => setParam('smoothingFactor', v)} tooltip="How gently color fades from busy to quiet streets" />
-              <Slider label="Width" value={params.baseWidth} min={0} max={3} step={0.1} onChange={v => setParam('baseWidth', v)} tooltip="Base thickness of all street lines" />
-              <Slider label="Width cap" value={params.widthCap} min={1} max={14} step={0.5} onChange={v => setParam('widthCap', v)} tooltip="Maximum thickness for your most-visited streets" />
-              <Slider label="Fade threshold" value={params.transparencyThreshold} min={0} max={30} step={1} onChange={v => setParam('transparencyThreshold', v)} tooltip="Bottom % of visited streets that fade to transparent" />
-              <Slider label="Influence threshold" value={params.influenceThreshold} min={1} max={20} step={1} onChange={v => setParam('influenceThreshold', v)} tooltip="Visits needed for a street to spread color to its neighbors" />
-            </div>
+          <div className="mt-auto pt-6">
+            <PrimaryButton full onClick={handleExport} disabled={loadState !== 'ready'}>
+              Compose print →
+            </PrimaryButton>
           </div>
-
-          {/* Load state */}
-          {loadState !== 'ready' && (
-            <div className="mt-auto pt-4 border-t border-border">
-              {loadState === 'error' ? (
-                <p className="text-red-400 text-xs">{error}</p>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full border border-accent-purple border-t-transparent animate-spin shrink-0" />
-                  <p className="text-text-muted text-xs">{loadMsg}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Map + deck.gl overlay */}
-        <div className="flex-1 relative">
-          {/* Inline positioning is deliberate: maplibre-gl.css sets
-              `.maplibregl-map { position: relative }` and is bundled after
-              Tailwind's utilities, so a `absolute inset-0` class is overridden
-              and the container collapses to zero height. Inline style wins. */}
-          <div ref={mapContainer} style={{ position: 'absolute', inset: 0 }} />
-
-          {/* Map controls */}
-          <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
-            <button
-              onClick={() => mapRef.current?.zoomIn()}
-              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-lg leading-none transition-colors"
-              title="Zoom in"
-            >+</button>
-            <button
-              onClick={() => mapRef.current?.zoomOut()}
-              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-lg leading-none transition-colors"
-              title="Zoom out"
-            >−</button>
-            <button
-              onClick={fitToData}
-              className="w-8 h-8 flex items-center justify-center rounded-lg bg-surface border border-border text-text-muted hover:text-text-primary shadow-lg text-xs leading-none transition-colors"
-              title="Center"
-            >⌖</button>
-          </div>
-
-          <DeckGL
-            style={{ position: 'absolute', top: '0', left: '0', right: '0', bottom: '0', pointerEvents: 'none' }}
-            viewState={viewState}
-            onViewStateChange={({ viewState: vs }) => setViewState(vs as typeof viewState)}
-            controller={false}
-            layers={layers}
-          />
-        </div>
+        </aside>
       </div>
-    </div>
-  )
-}
-
-function Slider({ label, value, min, max, step, onChange, tooltip }: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step: number
-  onChange: (v: number) => void
-  tooltip?: string
-}) {
-  return (
-    <div>
-      <div className="flex justify-between mb-1">
-        <span className="relative group flex items-center gap-1 cursor-default">
-          <span className="text-xs text-text-muted">{label}</span>
-          {tooltip && (
-            <>
-              <span className="text-[10px] text-text-muted/40">ⓘ</span>
-              <span className="absolute bottom-full left-0 mb-2 w-48 bg-surface border border-border rounded-lg px-2.5 py-2 text-xs text-text-primary leading-snug opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50 shadow-lg">
-                {tooltip}
-              </span>
-            </>
-          )}
-        </span>
-        <span className="text-xs text-text-primary font-mono">{value}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={String(value)}
-        onChange={e => onChange(parseFloat(e.target.value))}
-        className="w-full accent-accent-purple"
-      />
-    </div>
+    </Shell>
   )
 }

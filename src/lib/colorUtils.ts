@@ -20,6 +20,18 @@ export interface ColorPreset {
   high: RGB           // high-visit color
   baseStreetColor: RGBA
   baseStreetWidth: number
+  /**
+   * Drives `--accent` on the app root. The gallery chrome is otherwise neutral,
+   * so this single value is the only colour the UI borrows from the artwork —
+   * selected states only, never decoration.
+   */
+  accent: string
+}
+
+/** CSS gradient for a palette swatch chip, least- to most-visited. */
+export function presetSwatch(p: ColorPreset): string {
+  const rgb = (c: RGB) => `rgb(${c[0]},${c[1]},${c[2]})`
+  return `linear-gradient(135deg, ${rgb(p.low)}, ${rgb(p.mid)} 61%, ${rgb(p.high)})`
 }
 
 export const PRESETS: ColorPreset[] = [
@@ -32,6 +44,7 @@ export const PRESETS: ColorPreset[] = [
     high: [242, 242, 242],  // near white
     baseStreetColor: [123, 179, 211, 60],
     baseStreetWidth: 0.5,
+    accent: '#E67E22',
   },
   {
     id: 'ember',
@@ -42,6 +55,7 @@ export const PRESETS: ColorPreset[] = [
     high: [255, 240, 100],  // bright yellow
     baseStreetColor: [180, 100, 60, 50],
     baseStreetWidth: 0.5,
+    accent: '#E2711D',
   },
   {
     id: 'frost',
@@ -52,6 +66,7 @@ export const PRESETS: ColorPreset[] = [
     high: [200, 235, 255],  // icy white
     baseStreetColor: [60, 120, 180, 50],
     baseStreetWidth: 0.5,
+    accent: '#3CA0DC',
   },
   {
     id: 'light',
@@ -62,6 +77,7 @@ export const PRESETS: ColorPreset[] = [
     high: [60,  20,  10],   // dark brown
     baseStreetColor: [160, 150, 140, 80],
     baseStreetWidth: 0.5,
+    accent: '#C8501E',
   },
 ]
 

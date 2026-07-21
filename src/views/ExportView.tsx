@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
+import Shell, { NavLink, PrimaryButton, SectionLabel } from '@/components/gallery/Shell'
+import FramedPoster from '@/components/gallery/FramedPoster'
+import { GallerySlider } from '@/components/gallery/controls'
 import {
   type ExportFormat,
   type ExportOrientation,
@@ -142,180 +145,140 @@ export default function ExportView({ data, onBack }: Props) {
     }
   }
 
-  const aspectRatio = orientation === 'horizontal' ? '4/3' : '3/4'
+  const aspect = orientation === 'horizontal' ? 4 / 3 : 3 / 4
 
   return (
-    <div className="h-full w-full flex flex-col bg-bg" style={{ userSelect: 'none' }}>
+    <Shell
+      screenLabel="Compose"
+      navLeft={<NavLink onClick={onBack}>← back</NavLink>}
+      navRight={
+        <PrimaryButton onClick={handleDownload} disabled={isDownloading}>
+          {isDownloading ? 'Exporting…' : 'Download ↓'}
+        </PrimaryButton>
+      }
+    >
+      <div className="h-full w-full flex" style={{ userSelect: 'none' }}>
 
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-        <button
-          onClick={onBack}
-          className="text-text-muted hover:text-text-primary text-sm transition-colors"
-        >
-          ← Back
-        </button>
-        <h2 className="text-sm font-medium text-text-primary">Export your trace</h2>
-        <button
-          onClick={handleDownload}
-          disabled={isDownloading}
-          className="px-4 py-1.5 rounded-lg text-sm font-medium bg-gradient-to-r from-accent-purple to-accent-orange text-white disabled:opacity-50 hover:opacity-90 transition-all"
-        >
-          {isDownloading ? 'Exporting…' : 'Download →'}
-        </button>
-      </div>
+        {/* The print, matted exactly as it will export */}
+        <div className="flex-1 min-w-0">
+          <FramedPoster aspect={aspect} canvasBg={data.preset.background}>
+            <div ref={containerRef} style={{ position: 'absolute', inset: 0 }}>
+              <canvas ref={previewCanvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
 
-      <div className="flex flex-1 overflow-hidden">
+              {/* Reframe handle over the artwork area */}
+              <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+                <div
+                  style={{
+                    position: 'absolute',
+                    left:   `${mapRect.x * 100}%`,
+                    top:    `${mapRect.y * 100}%`,
+                    width:  `${mapRect.w * 100}%`,
+                    height: `${mapRect.h * 100}%`,
+                  }}
+                >
+                  <div style={{ position: 'absolute', inset: 0, cursor: 'move' }} onMouseDown={startDrag} />
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      border: '1px dashed var(--accent)',
+                      opacity: 0.65,
+                      pointerEvents: 'none',
+                    }}
+                  />
+                  <CornerHandle corner="nw" onMouseDown={startResize('nw')} />
+                  <CornerHandle corner="ne" onMouseDown={startResize('ne')} />
+                  <CornerHandle corner="sw" onMouseDown={startResize('sw')} />
+                  <CornerHandle corner="se" onMouseDown={startResize('se')} />
+                </div>
+              </div>
+            </div>
+          </FramedPoster>
+        </div>
 
-        {/* Left panel */}
-        <div className="w-56 shrink-0 border-r border-border p-4 flex flex-col gap-5 overflow-y-auto">
-
+        {/* The rail */}
+        <aside className="w-[352px] shrink-0 border-l border-line px-8 py-9 flex flex-col gap-7 overflow-y-auto">
           <div>
-            <label className="block text-xs text-text-muted uppercase tracking-wider mb-1.5">
-              Title
-            </label>
+            <SectionLabel>Title</SectionLabel>
             <input
               value={title}
               onChange={e => setTitle(e.target.value)}
-              className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-purple/60 tracking-widest uppercase font-mono"
+              className="w-full bg-mat border border-line rounded-sm px-3 py-2.5
+                         font-mono text-[13px] uppercase tracking-[.14em] text-ink
+                         focus:outline-none focus:border-accent transition-colors"
             />
           </div>
 
           {format !== 'just-title' && (
             <div>
-              <label className="block text-xs text-text-muted uppercase tracking-wider mb-1.5">
-                Subtitle
-              </label>
+              <SectionLabel>Subtitle</SectionLabel>
               <input
                 value={subtitle}
                 onChange={e => setSubtitle(e.target.value)}
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent-purple/60 tracking-wider font-mono"
+                className="w-full bg-mat border border-line rounded-sm px-3 py-2.5
+                           font-mono text-[13px] uppercase tracking-[.14em] text-ink
+                           focus:outline-none focus:border-accent transition-colors"
               />
             </div>
           )}
 
+          <GallerySlider
+            label="Text position"
+            value={Math.round(textPosition * 100)}
+            min={0}
+            max={100}
+            step={5}
+            onChange={v => setTextPosition(v / 100)}
+          />
+
           <div>
-            <div className="flex justify-between mb-1.5">
-              <span className="text-xs text-text-muted">Text position</span>
-              <span className="text-xs text-text-primary font-mono">{Math.round(textPosition * 100)}%</span>
-            </div>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={textPosition}
-              onChange={e => setTextPosition(parseFloat(e.target.value))}
-              className="w-full accent-accent-purple"
-            />
-          </div>
-        </div>
-
-        {/* Preview area */}
-        <div className="flex-1 flex items-center justify-center overflow-hidden p-8 bg-surface/20">
-
-          {/* Wrapper: matches poster aspect ratio, contains canvas + overlay */}
-          <div
-            ref={containerRef}
-            style={{
-              position: 'relative',
-              aspectRatio,
-              maxWidth: '100%',
-              maxHeight: '100%',
-              boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
-              borderRadius: '2px',
-            }}
-          >
-            {/* Canvas fills the wrapper */}
-            <canvas
-              ref={previewCanvasRef}
-              style={{ display: 'block', width: '100%', height: '100%' }}
-            />
-
-            {/* Interaction overlay */}
-            <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
-              <div
-                style={{
-                  position: 'absolute',
-                  left:   `${mapRect.x * 100}%`,
-                  top:    `${mapRect.y * 100}%`,
-                  width:  `${mapRect.w * 100}%`,
-                  height: `${mapRect.h * 100}%`,
-                }}
-              >
-                {/* Drag handle — covers interior */}
-                <div
-                  style={{ position: 'absolute', inset: 0, cursor: 'move' }}
-                  onMouseDown={startDrag}
-                />
-                {/* Dashed border */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    border: '1px dashed rgba(155,89,182,0.55)',
-                    pointerEvents: 'none',
-                  }}
-                />
-                {/* Corner handles */}
-                <CornerHandle corner="nw" onMouseDown={startResize('nw')} />
-                <CornerHandle corner="ne" onMouseDown={startResize('ne')} />
-                <CornerHandle corner="sw" onMouseDown={startResize('sw')} />
-                <CornerHandle corner="se" onMouseDown={startResize('se')} />
-              </div>
+            <SectionLabel>Format</SectionLabel>
+            <div className="flex gap-3">
+              {FORMAT_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setFormat(opt.value)}
+                  className="flex flex-col items-center gap-2 group"
+                  aria-pressed={format === opt.value}
+                >
+                  <FormatIcon format={opt.value} active={format === opt.value} />
+                  <span className={`font-mono text-[9px] uppercase tracking-[.16em] transition-opacity ${
+                    format === opt.value ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'
+                  }`}>
+                    {opt.label}
+                  </span>
+                </button>
+              ))}
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* Bottom card bar */}
-      <div className="border-t border-border shrink-0 px-5 py-3 flex items-end gap-8">
-
-        <div>
-          <p className="text-xs text-text-muted uppercase tracking-wider mb-2">Format</p>
-          <div className="flex gap-2">
-            {FORMAT_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => setFormat(opt.value)}
-                className={`flex flex-col items-center gap-2 px-3 py-2.5 rounded-lg border transition-all ${
-                  format === opt.value
-                    ? 'border-accent-purple bg-accent-purple/10'
-                    : 'border-border hover:border-accent-purple/40'
-                }`}
-              >
-                <FormatIcon format={opt.value} active={format === opt.value} />
-                <span className={`text-xs leading-none ${format === opt.value ? 'text-accent-purple' : 'text-text-muted'}`}>
-                  {opt.label}
-                </span>
-              </button>
-            ))}
+          <div>
+            <SectionLabel>Orientation</SectionLabel>
+            <div className="flex gap-3 items-end">
+              {ORIENTATION_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  onClick={() => setOrientation(opt.value)}
+                  className="flex flex-col items-center gap-2 group"
+                  aria-pressed={orientation === opt.value}
+                >
+                  <OrientationIcon orientation={opt.value} active={orientation === opt.value} />
+                  <span className={`font-mono text-[9px] uppercase tracking-[.16em] transition-opacity ${
+                    orientation === opt.value ? 'opacity-100' : 'opacity-50 group-hover:opacity-80'
+                  }`}>
+                    {opt.label}
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div>
-          <p className="text-xs text-text-muted uppercase tracking-wider mb-2">Orientation</p>
-          <div className="flex gap-2">
-            {ORIENTATION_OPTIONS.map(opt => (
-              <button
-                key={opt.value}
-                onClick={() => setOrientation(opt.value)}
-                className={`flex flex-col items-center gap-2 px-3 py-2.5 rounded-lg border transition-all ${
-                  orientation === opt.value
-                    ? 'border-accent-purple bg-accent-purple/10'
-                    : 'border-border hover:border-accent-purple/40'
-                }`}
-              >
-                <OrientationIcon orientation={opt.value} active={orientation === opt.value} />
-                <span className={`text-xs leading-none ${orientation === opt.value ? 'text-accent-purple' : 'text-text-muted'}`}>
-                  {opt.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        </div>
+          <p className="mt-auto pt-6 font-mono text-[9px] uppercase tracking-[.18em] text-muted">
+            Exports at 4800 × 3600 px · PNG
+          </p>
+        </aside>
       </div>
-    </div>
+    </Shell>
   )
 }
 
@@ -336,7 +299,7 @@ function CornerHandle({ corner, onMouseDown }: { corner: Corner; onMouseDown: (e
         position: 'absolute',
         width: 10,
         height: 10,
-        background: '#9b59b6',
+        background: 'var(--accent)',
         borderRadius: 2,
         ...CORNER_STYLE[corner],
       }}
@@ -353,28 +316,30 @@ const FORMAT_OPTIONS: { value: ExportFormat; label: string }[] = [
 ]
 
 function FormatIcon({ format, active }: { format: ExportFormat; active: boolean }) {
-  const map  = active ? 'bg-accent-purple/25' : 'bg-text-muted/15'
-  const bold = active ? 'bg-accent-purple/70' : 'bg-text-muted/50'
-  const med  = active ? 'bg-accent-purple/45' : 'bg-text-muted/30'
+  const frame = `w-9 h-11 p-[3px] flex flex-col gap-[3px] rounded-sm border transition-colors ${
+    active ? 'border-accent' : 'border-line group-hover:border-muted'
+  }`
+  const bar = active ? 'bg-accent' : 'bg-muted/50'
+  const art = 'flex-1 bg-muted/15'
 
   if (format === 'sandwich') return (
-    <div className="flex flex-col gap-[3px] w-9 h-10">
-      <div className={`h-[5px] rounded-sm ${bold}`} />
-      <div className={`flex-1 rounded-sm ${map}`} />
-      <div className={`h-[4px] rounded-sm ${med}`} />
+    <div className={frame}>
+      <div className={`h-[3px] ${bar}`} />
+      <div className={art} />
+      <div className={`h-[2px] ${bar} opacity-70`} />
     </div>
   )
   if (format === 'title-subtitle') return (
-    <div className="flex flex-col gap-[3px] w-9 h-10">
-      <div className={`h-[5px] rounded-sm ${bold}`} />
-      <div className={`h-[3px] rounded-sm ${med}`} />
-      <div className={`flex-1 rounded-sm ${map}`} />
+    <div className={frame}>
+      <div className={art} />
+      <div className={`h-[3px] ${bar}`} />
+      <div className={`h-[2px] ${bar} opacity-70`} />
     </div>
   )
   return (
-    <div className="flex flex-col gap-[3px] w-9 h-10">
-      <div className={`flex-1 rounded-sm ${map}`} />
-      <div className={`h-[5px] rounded-sm ${bold}`} />
+    <div className={frame}>
+      <div className={art} />
+      <div className={`h-[3px] ${bar}`} />
     </div>
   )
 }
@@ -387,10 +352,10 @@ const ORIENTATION_OPTIONS: { value: ExportOrientation; label: string }[] = [
 ]
 
 function OrientationIcon({ orientation, active }: { orientation: ExportOrientation; active: boolean }) {
-  const cls = `border-2 rounded-sm transition-colors ${
-    active ? 'border-accent-purple bg-accent-purple/10' : 'border-text-muted/30'
+  const cls = `rounded-sm border transition-colors ${
+    active ? 'border-accent' : 'border-line group-hover:border-muted'
   }`
   return orientation === 'horizontal'
     ? <div className={`w-12 h-9 ${cls}`} />
-    : <div className={`w-9 h-12 ${cls}`} />
+    : <div className={`w-9 h-11 ${cls}`} />
 }

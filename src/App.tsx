@@ -1,13 +1,12 @@
 import { useEffect, useState } from 'react'
 import UploadView from '@/views/UploadView'
 import ScopeView from '@/views/ScopeView'
-import StyleView from '@/views/StyleView'
+import StyleView, { type SampleTab } from '@/views/StyleView'
 import ExportView from '@/views/ExportView'
-import PrivacyBar from '@/components/PrivacyBar'
-import DemoBar from '@/components/DemoBar'
 import type { TracePoint } from '@/lib/parseTimeline'
 import type { CityMeta } from '@/lib/cities'
 import type { ExportRenderData } from '@/lib/exportRenderer'
+import { PRESETS, type ColorPreset } from '@/lib/colorUtils'
 import { DEMOS, DEFAULT_DEMO, loadDemo, demoCity, type DemoSet } from '@/lib/demo'
 
 export type AppStep = 'upload' | 'scope' | 'style' | 'export'
@@ -21,14 +20,29 @@ export interface ScopeSelection {
   city: CityMeta | null
 }
 
-export default function App() {
-  const [mode, setMode]                 = useState<DataMode>('demo')
-  const [activeDemo, setActiveDemo]     = useState<DemoSet>(DEFAULT_DEMO)
-  const [demoError, setDemoError]       = useState<string | null>(null)
+const byId = (id: string) => PRESETS.find(p => p.id === id) ?? PRESETS[0]
 
-  const [step, setStep]                 = useState<AppStep>('style')
-  const [allPoints, setAllPoints]       = useState<TracePoint[]>([])
-  const [exportData, setExportData]     = useState<ExportRenderData | null>(null)
+/**
+ * Desktop opens on Light — a cream, letterpress-looking print, which is the
+ * strongest first impression the renderer produces. Mobile opens on Glow, where
+ * the artwork is full-bleed behind a paper sheet and needs to read dark against
+ * it.
+ */
+function initialPreset(): ColorPreset {
+  const narrow = typeof window !== 'undefined' &&
+    window.matchMedia('(max-width: 767px)').matches
+  return narrow ? byId('glow-dark') : byId('light')
+}
+
+export default function App() {
+  const [mode, setMode]             = useState<DataMode>('demo')
+  const [activeDemo, setActiveDemo] = useState<DemoSet>(DEFAULT_DEMO)
+  const [demoError, setDemoError]   = useState<string | null>(null)
+  const [preset, setPreset]         = useState<ColorPreset>(initialPreset)
+
+  const [step, setStep]             = useState<AppStep>('style')
+  const [allPoints, setAllPoints]   = useState<TracePoint[]>([])
+  const [exportData, setExportData] = useState<ExportRenderData | null>(null)
 
   /**
    * Points and their city must land together. StyleView loads its street
@@ -42,8 +56,12 @@ export default function App() {
     renderKey: string
   } | null>(null)
 
-  // Load the sample trace on mount, and again whenever the demo is switched.
-  // The visitor sees a finished poster without touching anything.
+  // The gallery chrome is neutral; this is the only colour it borrows from the
+  // artwork, and every control reads it from the root.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--accent', preset.accent)
+  }, [preset])
+
   useEffect(() => {
     if (mode !== 'demo') return
     let cancelled = false
@@ -72,8 +90,8 @@ export default function App() {
   }
 
   function handleBack() {
-    // In demo mode there is no upload/scope history to walk back through —
-    // the only meaningful "back" is switching to your own data.
+    // In demo mode there is no upload/scope history to walk back through — the
+    // only meaningful "back" is switching to your own data.
     if (mode === 'demo') { startOwnData(); return }
     if (step === 'scope')  setStep('upload')
     if (step === 'style')  setStep('scope')
@@ -98,74 +116,56 @@ export default function App() {
     setActiveDemo(DEFAULT_DEMO)
   }
 
-  const showDemoBar = mode === 'demo' && step !== 'export'
+  const sampleTabs: SampleTab[] = DEMOS.map(d => ({ id: d.id, label: d.label }))
 
   return (
-    <div className="h-full w-full flex flex-col bg-bg">
-      <PrivacyBar mode={mode} onUseOwnData={startOwnData} onBackToDemo={backToDemo} />
+    <>
+      {mode === 'user' && step === 'upload' && (
+        <UploadView onUpload={handleUpload} onViewSample={backToDemo} />
+      )}
 
-      {showDemoBar && (
-        <DemoBar
-          demos={DEMOS}
-          active={activeDemo}
-          onSelect={setActiveDemo}
-          onUseOwnData={startOwnData}
+      {mode === 'user' && step === 'scope' && (
+        <ScopeView allPoints={allPoints} onConfirm={handleScope} onBack={handleBack} />
+      )}
+
+      {demoError && mode === 'demo' && (
+        <div className="h-full w-full flex flex-col items-center justify-center gap-5 bg-wall text-center px-6">
+          <p className="font-mono text-[11px] tracking-[.06em] text-ink">{demoError}</p>
+          <button
+            onClick={startOwnData}
+            className="border border-line rounded-sm px-4 py-2 font-sans text-[11px] font-medium
+                       uppercase tracking-[.16em] hover:border-ink transition-colors"
+          >
+            Use your own data
+          </button>
+        </div>
+      )}
+
+      {/* StyleView stays mounted under the export overlay so the graph is
+          preserved. Keyed so a new trace remounts it against the right network. */}
+      {!demoError && (step === 'style' || step === 'export') && trace && (
+        <StyleView
+          key={trace.renderKey}
+          points={trace.points}
+          city={trace.city}
+          preset={preset}
+          onPresetChange={setPreset}
+          samples={mode === 'demo' ? sampleTabs : undefined}
+          activeSampleId={mode === 'demo' ? activeDemo.id : undefined}
+          onSelectSample={mode === 'demo'
+            ? (t) => { const d = DEMOS.find(x => x.id === t.id); if (d) setActiveDemo(d) }
+            : undefined}
+          backLabel={mode === 'demo' ? 'use your own data' : 'back'}
+          onBack={handleBack}
+          onExport={handleExport}
         />
       )}
 
-      <div className="flex-1 min-h-0 relative">
-        {demoError && mode === 'demo' && (
-          <div className="h-full w-full flex flex-col items-center justify-center gap-4 px-6 text-center">
-            <p className="text-red-400 text-sm">{demoError}</p>
-            <button
-              onClick={startOwnData}
-              className="px-4 py-2 rounded-lg text-sm border border-border text-text-muted hover:text-text-primary hover:border-accent-purple/50 transition-colors"
-            >
-              Use your own data instead
-            </button>
-          </div>
-        )}
-
-        {mode === 'user' && step === 'upload' && (
-          <UploadView onUpload={handleUpload} />
-        )}
-
-        {mode === 'user' && step === 'scope' && (
-          <ScopeView
-            allPoints={allPoints}
-            onConfirm={handleScope}
-            onBack={handleBack}
-          />
-        )}
-
-        {/* Loading the sample: keep the canvas area occupied so the layout does
-            not jump when the trace arrives. */}
-        {mode === 'demo' && !demoError && !trace && (
-          <div className="h-full w-full flex items-center justify-center gap-3">
-            <div className="w-4 h-4 rounded-full border-2 border-accent-purple border-t-transparent animate-spin" />
-            <p className="text-text-muted text-sm">Loading the {activeDemo.label} sample…</p>
-          </div>
-        )}
-
-        {/* StyleView stays mounted under the export overlay so the graph is preserved.
-            Keyed so a new trace remounts it and reloads the matching street network. */}
-        {!demoError && (step === 'style' || step === 'export') && trace && (
-          <StyleView
-            key={trace.renderKey}
-            points={trace.points}
-            city={trace.city}
-            backLabel={mode === 'demo' ? 'Use your own data' : undefined}
-            onBack={handleBack}
-            onExport={handleExport}
-          />
-        )}
-
-        {step === 'export' && exportData && (
-          <div className="fixed inset-0 z-50">
-            <ExportView data={exportData} onBack={() => setStep('style')} />
-          </div>
-        )}
-      </div>
-    </div>
+      {step === 'export' && exportData && (
+        <div className="fixed inset-0 z-50">
+          <ExportView data={exportData} onBack={() => setStep('style')} />
+        </div>
+      )}
+    </>
   )
 }

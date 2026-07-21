@@ -45,7 +45,7 @@ const SLICES = [
     // Central Sao Paulo, not the full municipality — excludes the Guarulhos
     // airport run, which spans ~0.24 deg on its own.
     id: 'sao-paulo',
-    label: 'Sao Paulo',
+    label: 'São Paulo',
     bbox: [-46.75, -23.62, -46.62, -23.52],
     from: '2025-10-02T00:00:00Z',
     to: '2025-10-08T23:59:59Z',

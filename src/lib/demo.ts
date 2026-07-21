@@ -33,7 +33,7 @@ export const DEMOS: DemoSet[] = [
   {
     id: 'sao-paulo',
     cityId: 'sao-paulo',
-    label: 'Sao Paulo',
+    label: 'São Paulo',
     blurb: 'Seven days, October 2025',
   },
 ]

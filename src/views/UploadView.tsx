@@ -1,11 +1,13 @@
 import { useCallback, useState } from 'react'
 import { parseTimelineJSON, type TracePoint } from '@/lib/parseTimeline'
+import Shell, { GhostButton } from '@/components/gallery/Shell'
 
 interface Props {
   onUpload: (points: TracePoint[]) => void
+  onViewSample: () => void
 }
 
-export default function UploadView({ onUpload }: Props) {
+export default function UploadView({ onUpload, onViewSample }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [dragging, setDragging] = useState(false)
@@ -38,82 +40,84 @@ export default function UploadView({ onUpload }: Props) {
   }, [processFile])
 
   return (
-    <div className="h-full w-full flex flex-col items-center justify-center bg-bg px-6">
-      {/* Intro */}
-      <div className="mb-10 text-center max-w-lg">
-        <h1 className="text-3xl font-light tracking-tight text-text-primary">
+    <Shell
+      screenLabel="Upload"
+      navRight={<GhostButton onClick={onViewSample}>View sample →</GhostButton>}
+    >
+      <div className="h-full w-full overflow-y-auto flex flex-col items-center justify-center px-8 py-10">
+        <h1 className="font-sans text-[40px] font-normal tracking-[.005em] text-center">
           Drop in your location history
         </h1>
-        <p className="mt-3 text-text-muted text-sm leading-relaxed">
+        <p className="mt-4 max-w-[560px] text-center font-sans text-[15px] leading-relaxed text-muted">
           Trace turns it into a clean, poster-quality geographical illustration —
           a trip, a honeymoon, or a whole year on one print.
         </p>
-      </div>
 
-      {/* Drop zone */}
-      <label
-        className={`
-          w-full max-w-md aspect-video flex flex-col items-center justify-center
-          border-2 border-dashed rounded-2xl cursor-pointer transition-all duration-200
-          ${dragging
-            ? 'border-accent-purple bg-accent-purple/5 scale-[1.02]'
-            : 'border-border hover:border-accent-purple/50 hover:bg-surface'
-          }
-        `}
-        onDragOver={e => { e.preventDefault(); setDragging(true) }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-      >
-        <input
-          type="file"
-          accept=".json"
-          className="hidden"
-          onChange={onFileInput}
-        />
+        {/* The drop zone is framed like the work it will become. */}
+        <label
+          className="mt-10 bg-frame shadow-frame cursor-pointer block"
+          style={{ padding: 15 }}
+          onDragOver={e => { e.preventDefault(); setDragging(true) }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+        >
+          <input type="file" accept=".json" className="hidden" onChange={onFileInput} />
+          <div
+            className="bg-mat flex flex-col items-center justify-center gap-4 transition-colors"
+            style={{
+              width: 520,
+              height: 264,
+              border: `1.5px dashed ${dragging ? 'var(--accent)' : 'rgba(29,27,23,0.14)'}`,
+            }}
+          >
+            {loading ? (
+              <p className="font-mono text-[9px] uppercase tracking-[.22em] text-muted">
+                Parsing in this tab…
+              </p>
+            ) : (
+              <>
+                <PinGlyph />
+                <p className="font-sans text-[16px]">Drop your Timeline JSON here</p>
+                <p className="font-mono text-[9px] uppercase tracking-[.18em] text-muted">
+                  Google Takeout → Location History → Timeline.json
+                </p>
+              </>
+            )}
+          </div>
+        </label>
 
-        {loading ? (
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 rounded-full border-2 border-accent-purple border-t-transparent animate-spin" />
-            <p className="text-text-muted text-sm">Parsing your data...</p>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-3 text-center px-8">
-            <div className="w-12 h-12 rounded-full bg-surface flex items-center justify-center text-accent-purple">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
-                <circle cx="12" cy="10" r="3" />
-              </svg>
-            </div>
-            <p className="text-text-primary text-sm font-medium">
-              Drop your Timeline JSON here
-            </p>
-            <p className="text-text-muted text-xs leading-relaxed">
-              Export from Google Takeout → Location History → Timeline.json
-            </p>
-          </div>
+        {error && (
+          <p className="mt-5 max-w-[520px] text-center font-mono text-[10px] leading-relaxed text-[#B0402A]">
+            {error}
+          </p>
         )}
-      </label>
 
-      {error && (
-        <p className="mt-4 text-red-400 text-xs text-center max-w-sm">{error}</p>
-      )}
+        {/* Restated where it matters, beside the file picker. Deliberately
+            precise about the one network call the app makes, so the claim holds
+            up if someone opens the network tab. */}
+        <p className="mt-8 max-w-[560px] text-center font-mono text-[10px] leading-[1.7] text-muted">
+          Your file is read in this tab and never sent anywhere. The only thing Trace
+          requests from the network is public street-map data for the area you pick —
+          never your file, and nothing at all for the sample cities.
+        </p>
 
-      {/* Privacy note — restated at the exact moment it matters, next to the
-          file picker. Deliberately precise about the one network call the app
-          does make, so the claim holds up if someone opens the network tab. */}
-      <p className="mt-8 text-text-muted text-xs text-center max-w-md leading-relaxed">
-        Your file is read in this tab and never sent anywhere. The only thing Trace
-        requests from the network is public street-map data for the area you pick —
-        never your file, and nothing at all for the sample cities.
-      </p>
+        <button
+          onClick={() => window.open('https://takeout.google.com', '_blank', 'noopener,noreferrer')}
+          className="mt-5 font-mono text-[10px] tracking-[.06em] text-muted underline underline-offset-4 hover:text-ink transition-colors"
+        >
+          How to export your Google Timeline →
+        </button>
+      </div>
+    </Shell>
+  )
+}
 
-      {/* How to get your data */}
-      <button
-        className="mt-4 text-xs text-accent-purple/70 hover:text-accent-purple underline underline-offset-2 transition-colors"
-        onClick={() => window.open('https://takeout.google.com', '_blank')}
-      >
-        How to export your Google Timeline →
-      </button>
-    </div>
+function PinGlyph() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--accent)"
+         strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
   )
 }
